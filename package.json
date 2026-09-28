@@ -1,0 +1,27 @@
+{
+  "name": "writer-state-map",
+  "version": "0.1.0",
+  "description": "Interactive world map panel for writers. Chapter maps live in the plugin's data.json, never in your notes.",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --pretty && node esbuild.config.mjs production",
+    "check": "tsc --noEmit --pretty",
+    "test": "node --experimental-strip-types --no-warnings --import ./test/register.mjs test/smoke.ts"
+  },
+  "keywords": [
+    "obsidian",
+    "writing",
+    "worldbuilding",
+    "map"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "builtin-modules": "^5.0.0",
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.13.1",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "id": "writer-state-map",
+  "name": "Writer's State Map",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Interactive world map in the right sidebar. One chapter file = one state of the map: locations and character tokens live in the plugin's own data.json, and each chapter gets a generated note of its own.",
+  "author": "lunatopik",
+  "isDesktopOnly": false
+}

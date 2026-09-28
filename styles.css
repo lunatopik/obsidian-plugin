@@ -1,0 +1,1013 @@
+щзутсщву/* =====================================================================
+   Writer's State Map
+   Two sibling tabs in the right sidebar: the map and the roster.
+   ===================================================================== */
+
+.wsm-map,
+.wsm-roster {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------
+   Map: toolbar
+   --------------------------------------------------------------------- */
+
+.wsm-map__toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex: 0 0 auto;
+}
+
+.wsm-map__file {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.wsm-map__hint {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	text-align: right;
+	flex-shrink: 0;
+}
+
+.wsm-map__hint:empty {
+	display: none;
+}
+
+/* Toolbar actions (background picker). */
+.wsm-map__tools {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	flex-shrink: 0;
+}
+
+.wsm-map__tool {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--size-4-1);
+	box-shadow: none;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.wsm-map__tool:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* ---------------------------------------------------------------------
+   Map: stage
+   The stage is a fixed design canvas scaled with a transform, so the
+   stored coordinates stay in "map pixels" regardless of sidebar size.
+   --------------------------------------------------------------------- */
+
+.wsm-map__wrap {
+	position: relative;
+	overflow: auto;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+/* Reserves the scaled footprint inside the scroll container. */
+.wsm-map__sizer {
+	position: relative;
+}
+
+.wsm-map__stage {
+	position: absolute;
+	top: 0;
+	left: 0;
+	transform-origin: top left;
+	background-color: var(--background-primary);
+}
+
+/* No background image: a subtle grid so nodes still have a place to sit. */
+.wsm-map__stage.is-placeholder {
+	background-image:
+		linear-gradient(var(--background-modifier-border) 1px, transparent 1px),
+		linear-gradient(90deg, var(--background-modifier-border) 1px, transparent 1px);
+	background-size: 64px 64px;
+	background-position: center;
+	opacity: 0.9;
+}
+
+.wsm-map__bg {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+	pointer-events: none;
+	user-select: none;
+}
+
+.wsm-map__bg.is-hidden {
+	display: none;
+}
+
+.wsm-map__stage.is-broken .wsm-map__bg {
+	opacity: 0;
+}
+
+.wsm-map__nodes {
+	position: absolute;
+	inset: 0;
+}
+
+/* ---------------------------------------------------------------------
+   Map: nodes
+   The anchor is a 0x0 box in canvas coordinates; the visible part is
+   counter-scaled by --wsm-inv (1/scale) so nodes keep a constant screen size.
+   --------------------------------------------------------------------- */
+
+.wsm-node {
+	position: absolute;
+	width: 0;
+	height: 0;
+	cursor: grab;
+}
+
+.wsm-node.is-dragging {
+	cursor: grabbing;
+	z-index: 20;
+}
+
+/* The pin is the location itself: everything else hangs off that one point.
+   It centres on the 0x0 anchor and counter-scales by --wsm-inv, so it stays the
+   same size on screen however far the map is zoomed out to fit the sidebar. */
+.wsm-node__pin {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 14px;
+	height: 14px;
+	margin: -7px 0 0 -7px;
+	border-radius: 999px;
+	background-color: var(--text-normal);
+	border: 2px solid var(--background-primary);
+	box-shadow: 0 0 0 1px var(--background-modifier-border), var(--shadow-s);
+	transform: scale(var(--wsm-inv, 1));
+	transform-origin: center;
+	cursor: grab;
+}
+
+.wsm-node__pin.is-empty {
+	background-color: var(--background-primary-alt);
+	border-style: dashed;
+	border-color: var(--text-faint);
+}
+
+.wsm-node.is-dragging .wsm-node__pin {
+	cursor: grabbing;
+}
+
+.wsm-node__label {
+	position: absolute;
+	left: 0;
+	top: 0;
+	/* 7px is the pin's half-width, +2px so the pill clears its border. */
+	transform: translate(-50%, 9px) scale(var(--wsm-inv, 1));
+	transform-origin: top center;
+	max-width: 130px;
+	padding: 1px 6px;
+	border-radius: var(--radius-s);
+	background-color: var(--background-modifier-message);
+	color: var(--text-on-accent);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	text-align: center;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	box-shadow: var(--shadow-s);
+	cursor: grab;
+}
+
+/* ---------------------------------------------------------------------
+   Map: the character ring
+   A 0x0 layer on the pin. Children place themselves by offset, so the ring
+   needs no wrapper box of its own — and `pointer-events: none` keeps the
+   spokes and the empty space between them from swallowing the double-click
+   that creates a new location.
+   --------------------------------------------------------------------- */
+
+.wsm-fan {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 0;
+	height: 0;
+	pointer-events: none;
+	will-change: transform;
+}
+
+/* The box the spokes live in: a 4096x4096 viewport centred on the pin, so every
+   line has room to run in any direction and nothing depends on `overflow:
+   visible` holding on a zero-sized viewport. The same numbers are in
+   src/map-view.ts as SPOKE_VIEWPORT, and a test compares the two. */
+.wsp-spokes {
+	position: absolute;
+	left: -2048px;
+	top: -2048px;
+	width: 4096px;
+	height: 4096px;
+	overflow: visible;
+	pointer-events: none;
+	/* Under the avatars (.wsm-avatar is z-index 2) and the pin, over the
+	   background image. */
+	z-index: 1;
+}
+
+.wsp-spoke {
+	stroke: var(--text-faint);
+	stroke-width: 1;
+	stroke-linecap: round;
+	/* Drawn on top of the background image but under the avatars. */
+	stroke-opacity: 0.7;
+}
+
+/* An avatar the author has dragged off its slot keeps a faint mark, so a hand
+   arranged ring can be told apart from a generated one at a glance. */
+.wsm-avatar.is-nudged {
+	box-shadow: 0 0 0 2px var(--background-modifier-border), var(--shadow-s);
+}
+
+.wsm-avatar {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	margin: -13px 0 0 -13px;
+	border-radius: 999px;
+	background-size: cover;
+	background-position: center;
+	border: 2px solid var(--background-primary);
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1;
+	letter-spacing: 0.2px;
+	/* Two opposing shadows instead of one blur: they read as an outline on any
+	   background, including a light avatar image, so the initials never need the
+	   background colour to cooperate. */
+	text-shadow: 1px 1px 1px #000, -1px -1px 1px #000;
+	user-select: none;
+	/* Above the spoke layer, which is z-index 1. Both are positioned, so without
+	   an explicit order the layer would paint over the avatars. */
+	z-index: 2;
+	/* Counter-scaled like the pin: the ring is laid out in screen px, so the
+	   avatars have to be sized in screen px too or they would shrink with it. */
+	transform: scale(var(--wsm-inv, 1));
+	transform-origin: center;
+	cursor: grab;
+	pointer-events: auto;
+}
+
+.wsm-avatar.is-dragging {
+	cursor: grabbing;
+	z-index: 10;
+}
+
+.wsm-avatar.is-unknown {
+	border-style: dashed;
+	border-color: var(--text-faint);
+	opacity: 0.75;
+}
+
+.wsm-avatar.is-broken-avatar {
+	background-image: none !important;
+}
+
+/* ---------------------------------------------------------------------
+   Pawn tokens
+   Initials always sit on top of the color/avatar so a small token stays
+   readable even when the avatar is an indistinct thumbnail.
+   --------------------------------------------------------------------- */
+
+.wsm-token {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	margin: 0;
+	border-radius: 999px;
+	background-size: cover;
+	background-position: center;
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1;
+	letter-spacing: 0.2px;
+	/* No colour here on purpose: it is set by .text-* when the pawn has an
+	   explicit choice, and by .is-light otherwise. A default in the base rule
+	   would win over neither but only add a third way to be wrong. */
+	text-shadow: 1px 1px 1px #000, -1px -1px 1px #000;
+	user-select: none;
+}
+
+.wsm-token.is-unknown {
+	border: 1px dashed var(--text-faint);
+	opacity: 0.75;
+}
+
+/* ---------------------------------------------------------------------
+   Explicit initials colour
+   Set per pawn in the roster editor. Applied to the avatar and the token
+   alike, so the same choice reads the same on the map and in the list.
+   The automatic `is-light` class is only added when no explicit colour is
+   stored, which is why these live in the same block and never both.
+   --------------------------------------------------------------------- */
+
+.text-white {
+	color: #fff;
+	text-shadow: 1px 1px 1px #000, -1px -1px 1px #000;
+}
+
+.text-black {
+	color: #16161a;
+	/* A dark outline rather than a light one: the glyph is nearly black, so
+	   the halo has to be the opposite to separate it from a dark avatar. */
+	text-shadow: 1px 1px 1px #fff, -1px -1px 1px #fff;
+}
+
+.text-red {
+	color: #e02020;
+	text-shadow: 1px 1px 1px #000, -1px -1px 1px #000;
+}
+
+.wsm-avatar.is-light {
+	color: #16161a;
+	text-shadow: 0 1px 1px rgb(255 255 255 / 55%);
+}
+
+.wsm-token.is-light {
+	color: #16161a;
+	text-shadow: 0 1px 1px rgb(255 255 255 / 55%);
+}
+
+.wsm-token.is-unknown {
+	border: 1px dashed var(--text-faint);
+	opacity: 0.75;
+}
+
+.wsm-token.is-broken-avatar {
+	background-image: none !important;
+}
+
+.wsm-token.is-more {
+	background-color: var(--background-modifier-border);
+	color: var(--text-muted);
+	text-shadow: none;
+}
+
+.wsm-token--sm {
+	width: 20px;
+	height: 20px;
+	font-size: 9px;
+	flex: 0 0 auto;
+}
+
+.wsm-token--lg {
+	width: 44px;
+	height: 44px;
+	font-size: 15px;
+	border-radius: 12px;
+}
+
+/* ---------------------------------------------------------------------
+   Node popover
+   --------------------------------------------------------------------- */
+
+.wsm-pop {
+	position: absolute;
+	z-index: 30;
+	width: 236px;
+	max-height: 320px;
+	display: flex;
+	flex-direction: column;
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-secondary);
+	box-shadow: var(--shadow-l);
+	overflow: hidden;
+}
+
+.wsm-pop__head {
+	display: flex;
+	gap: var(--size-4-1);
+	margin-bottom: var(--size-4-2);
+}
+
+.wsm-pop__name {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: var(--font-ui-small);
+}
+
+.wsm-pop__list,
+.wsm-pop__section {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	overflow-y: auto;
+	min-height: 0;
+}
+
+.wsm-pop__section {
+	margin-top: var(--size-4-2);
+	padding-top: var(--size-4-2);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.wsm-pop__section-title {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	margin-bottom: 2px;
+}
+
+.wsm-pop__row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: 3px 4px;
+	border-radius: var(--radius-s);
+	cursor: pointer;
+}
+
+.wsm-pop__row:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.wsm-pop__name {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: var(--font-ui-small);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* The per-character "open their note" affordance, mirroring the roster tab's
+   `file-text` button. Sized as a button, not a row: the whole row is a label
+   for the checkbox, so the hit area has to look and behave like a control or
+   clicking it feels like a mistake. */
+.wsm-pop__note {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: 22px;
+	height: 22px;
+	border-radius: var(--radius-s);
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.wsm-pop__note:hover,
+.wsm-pop__note:focus-visible {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
+	outline: none;
+}
+
+.wsm-pop__note svg {
+	width: 14px;
+	height: 14px;
+	pointer-events: none;
+}
+
+.wsm-pop__link {
+	flex: 0 0 auto;
+	padding: 2px 6px;
+	font-size: var(--font-ui-smaller);
+	color: var(--interactive-accent);
+	background: none;
+	box-shadow: none;
+	cursor: pointer;
+}
+
+.wsm-pop__empty {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	padding: var(--size-4-1) 0;
+}
+
+.wsm-pop__foot {
+	margin-top: var(--size-4-2);
+	padding-top: var(--size-4-2);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.wsm-pop__danger {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--size-4-1);
+	width: 100%;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-error);
+	background: none;
+	box-shadow: none;
+	cursor: pointer;
+}
+
+.wsm-pop__danger:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+/* ---------------------------------------------------------------------
+   Empty states
+   --------------------------------------------------------------------- */
+
+.wsm-map__empty {
+	padding: var(--size-4-4) var(--size-4-3);
+	border-top: 1px solid var(--background-modifier-border);
+	flex: 0 0 auto;
+}
+
+.wsm-map__empty.is-hidden {
+	display: none;
+}
+
+/* No chapter open: the stage has nothing to show, hide it. */
+.wsm-map.is-no-chapter .wsm-map__wrap {
+	display: none;
+}
+
+.wsm-empty__title {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+}
+
+.wsm-empty__hint {
+	margin-top: 2px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.wsm-empty__code {
+	margin: var(--size-4-2) 0;
+	padding: var(--size-4-2);
+	border-radius: var(--radius-s);
+	background-color: var(--background-primary-alt);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.4;
+	overflow-x: auto;
+}
+
+.wsm-empty__copy {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Two answers in the empty state ("start a map" and "take the last one"), so
+   they stack instead of squeezing into a narrow sidebar side by side. */
+.wsm-empty__copy + .wsm-empty__copy {
+	margin-top: var(--size-4-2);
+}
+
+/* ---------------------------------------------------------------------
+   Where a map came from
+   A permanent line under the map, not a notice: it is a fact about the data
+   that stays true while the writer works, and a toast would be gone before
+   they could act on it.
+   --------------------------------------------------------------------- */
+
+.wsm-map__from {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-top: 1px solid var(--background-modifier-border);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.wsm-map__from-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.wsm-map__from-btn {
+	flex: none;
+	padding: 0 var(--size-4-2);
+	border-radius: var(--radius-s);
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+.wsm-map__from-btn:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.wsm-map__from-btn--icon {
+	display: flex;
+	align-items: center;
+	padding: var(--size-4-1);
+}
+
+/* A source that is no longer there is not a cosmetic detail: the writer needs to
+   know that the "inherited from" line is not pointing at anything real. */
+.wsm-map__from.is-stale .wsm-map__from-text {
+	color: var(--text-error);
+}
+
+/* ---------------------------------------------------------------------
+   Relationships tab
+   --------------------------------------------------------------------- */
+
+.wsm-rel {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+.wsm-rel__head {
+	padding: var(--size-4-3) var(--size-4-4) var(--size-4-2);
+}
+
+.wsm-rel__title {
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+}
+
+.wsm-rel__hint {
+	min-height: 1.2em;
+	margin-top: var(--size-4-1);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.wsm-rel__graph {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--size-4-2) var(--size-4-4);
+}
+
+.wsm-rel__graph.is-hidden {
+	display: none;
+}
+
+.wsm-rel__canvas {
+	width: 100%;
+	height: 100%;
+	max-height: 320px;
+	overflow: visible;
+}
+
+.wsm-rel__node {
+	cursor: pointer;
+}
+
+.wsm-rel__node circle {
+	stroke: var(--background-primary);
+	stroke-width: 1.5;
+}
+
+/* The first of the two picks, waiting for its other end. */
+.wsm-rel__node.is-picked circle {
+	stroke: var(--text-accent);
+	stroke-width: 3;
+}
+
+.wsm-rel__node.is-unknown circle,
+circle.is-unknown {
+	fill: var(--text-faint);
+}
+
+/* One class per kind, and CSS does the rest: blood is red and solid, debt is
+   blue and solid, a secret is grey and dashed — the one that is not meant to be
+   obvious. */
+.wsm-rel__line {
+	stroke-width: 2;
+	stroke-linecap: round;
+}
+
+.wsm-rel__line.is-blood {
+	stroke: #c0392b;
+}
+
+.wsm-rel__line.is-debt {
+	stroke: #2f6fb5;
+}
+
+.wsm-rel__line.is-secret {
+	stroke: #7a7a7a;
+	stroke-dasharray: 5 4;
+}
+
+.wsm-rel__list {
+	border-top: 1px solid var(--background-modifier-border);
+	padding: var(--size-4-2) var(--size-4-4) var(--size-4-4);
+	max-height: 40%;
+	overflow-y: auto;
+}
+
+.wsm-rel__list-title {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.wsm-rel__empty,
+.wsm-rel__off {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.wsm-rel__row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) 0;
+}
+
+.wsm-rel__row + .wsm-rel__row {
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.wsm-rel__pair {
+	flex: 1;
+	min-width: 0;
+	font-size: var(--font-ui-smaller);
+}
+
+.wsm-rel__arrow {
+	color: var(--text-muted);
+}
+
+.wsm-rel__remove {
+	display: flex;
+	align-items: center;
+}
+
+/* The kind picker, shown in place of the graph once both ends are known. The
+   graph comes back on cancel, so nothing is lost by asking. */
+.wsm-rel__kinds {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.wsm-rel__kinds-title {
+	font-size: var(--font-ui-small);
+	text-align: center;
+}
+
+.wsm-rel__kind {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	min-width: 160px;
+	justify-content: center;
+}
+
+.wsm-rel__kind.is-blood {
+	color: #c0392b;
+}
+
+.wsm-rel__kind.is-debt {
+	color: #2f6fb5;
+}
+
+.wsm-rel__kind.is-secret {
+	color: var(--text-muted);
+}
+
+.wsm-rel__kinds-cancel {
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+/* ---------------------------------------------------------------------
+   Roster tab
+   --------------------------------------------------------------------- */
+
+.wsm-roster__head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex: 0 0 auto;
+}
+
+.wsm-roster__title {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+}
+
+.wsm-roster__create {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+}
+
+.wsm-roster__privacy {
+	padding: var(--size-4-2) var(--size-4-3) 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	line-height: 1.4;
+	flex: 0 0 auto;
+}
+
+.wsm-roster__list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+	padding: var(--size-4-2) var(--size-4-3);
+	overflow-y: auto;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.wsm-card {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary);
+}
+
+.wsm-card__info {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.wsm-card__name {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wsm-card__id,
+.wsm-card__meta {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wsm-card__actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	/* The action cluster keeps its full width and the name ellipsises instead.
+	   `flex: 0 0 auto` already implies shrink: 0, but stating it directly is what
+	   stops the next person from "tidying" it into a shrinkable flex child. */
+	flex: 0 0 auto;
+	flex-shrink: 0;
+}
+
+.wsm-card__action {
+	padding: 4px;
+	background: none;
+	box-shadow: none;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.wsm-card__action:hover {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
+}
+
+.wsm-card__action.is-danger:hover {
+	color: var(--text-error);
+}
+
+/* ---------------------------------------------------------------------
+   Roster editor
+   --------------------------------------------------------------------- */
+
+.wsm-editor {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	padding: var(--size-4-3);
+	border-bottom: 1px solid var(--background-modifier-border);
+	background-color: var(--background-secondary);
+	flex: 0 0 auto;
+	max-height: 60%;
+	overflow-y: auto;
+}
+
+.wsm-editor__preview {
+	display: flex;
+	justify-content: center;
+	padding-bottom: var(--size-4-1);
+}
+
+.wsm-editor__row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	flex-wrap: wrap;
+}
+
+.wsm-editor__label {
+	flex: 0 0 76px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.wsm-editor__input {
+	flex: 1 1 90px;
+	min-width: 0;
+	font-size: var(--font-ui-small);
+}
+
+.wsm-editor__input--initials {
+	flex: 0 0 60px;
+	text-align: center;
+	text-transform: uppercase;
+}
+
+.wsm-editor__color {
+	flex: 0 0 auto;
+	width: 40px;
+	height: 24px;
+	padding: 0;
+	background: none;
+	border: none;
+	cursor: pointer;
+}
+
+.wsm-editor__actions {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	flex: 1 1 130px;
+	flex-wrap: wrap;
+}
+
+.wsm-editor__mini {
+	padding: 2px 6px;
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+.wsm-editor__note {
+	flex: 1 1 100%;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.wsm-editor__foot {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--size-4-2);
+}
+
+.wsm-editor__id {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+}
+
+.wsm-privacy {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}

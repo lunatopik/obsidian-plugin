@@ -1,0 +1,8 @@
+node_modules/
+main.js
+main.js.map
+data.json
+*.js.map
+.DS_Store
+.obsidian/
+.idea/

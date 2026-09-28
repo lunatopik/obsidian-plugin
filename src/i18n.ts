@@ -1,0 +1,374 @@
+import type { Language } from "./types";
+
+/**
+ * Minimal, dependency-free i18n.
+ *
+ * The English dictionary doubles as the source of truth for the key union,
+ * so a missing Russian translation is a compile-time error, not a runtime
+ * surprise.
+ */
+const en = {
+	viewMap: "Map",
+	viewRoster: "Characters",
+	viewRelationship: "Relationships",
+	viewNote: "WSM: Chapter Note",
+
+	/* ---- the relationships tab ---- */
+
+	relNoCast: "Nobody stands on this chapter's map yet. Add characters to a location and they will show up here.",
+	relNoLinks: "No ties yet. Click two characters and choose what kind it is.",
+	relPickFirst: "Click the first character.",
+	relPickSecond: "Now click the other end.",
+	relKindTitle: "{a} and {b}: what kind of tie?",
+	relKindLabel: "— {kind} —",
+	relKindBlood: "Blood",
+	relKindDebt: "Debt",
+	relKindSecret: "Secret",
+	relListTitle: "Ties",
+	relOffMap: "One of them is not on this map, so the line is not drawn",
+	relRemove: "Remove the tie",
+	relCancel: "Cancel",
+	noticeLinkAdded: "{a} and {b}: {kind}",
+	noticeLinkKept: "That tie was already there, with another kind. It was replaced.",
+	commandOpenRelationship: "Open relationships tab",
+	settingsDefaultViewRelationship: "Relationships",
+
+	emptyNoFileTitle: "No chapter open",
+	emptyNoFileHint: "Open a markdown note and its map is drawn from this plugin's data.",
+	emptyNoMapTitle: "No map for this chapter yet",
+	emptyNoMapHint: "Maps are stored by the plugin, not in your note. Create one to start.",
+	emptyCreateMap: "Create map",
+	emptyNoBgHint: "Pick a background image, then double-click the map to add a location.",
+	emptyNoNodesHint: "Double-click the map to create your first location.",
+	emptyBrokenBgTitle: "Background not found",
+	emptyBrokenBgHint: 'No file matches "{path}" in this vault.',
+
+	mapSetBackground: "Set background",
+	mapChangeBackground: "Change background",
+	mapClearBackground: "Remove background",
+
+	mapInheritFrom: "Inherit from",
+	mapInheritSummary: "Locations {nodes}, characters {pawns}",
+	mapInheritTitle: "Copy the locations, characters, background and canvas size",
+	mapInheritedFrom: "Inherited from {path}",
+	mapChangeParent: "Change source",
+	mapForgetParent: "Forget the source chapter",
+	mapParentMissing: "The source chapter was not found — it was renamed or deleted",
+	mapPickParent: "Source chapter",
+	noticeInherited: "Inherited from {path}: locations {nodes}, characters {pawns}",
+	noticeInheritRefused: "This map already has locations, so nothing was copied.",
+	noticeParentSet: "Source chapter set to {path}",
+	noticeParentCleared: "Source chapter forgotten",
+
+	rosterCreate: "Create pawn",
+	rosterEmptyTitle: "Roster is empty",
+	rosterEmptyHint: "Characters live here, not in your notes. Create a pawn to start.",
+	rosterName: "Name",
+	rosterNamePlaceholder: "e.g. Tom",
+	rosterInitials: "Initials",
+	rosterInitialsHint: "1-3 symbols, drawn on top of the token.",
+	rosterInitialsReset: "Auto",
+	rosterColor: "Color",
+	rosterTextColor: "Initials colour",
+	rosterTextColorAuto: "Automatic",
+	rosterTextColorWhite: "White",
+	rosterTextColorBlack: "Black",
+	rosterTextColorRed: "Red",
+	rosterAvatar: "Avatar",
+	rosterAvatarPick: "Choose image...",
+	rosterAvatarClear: "Remove",
+	rosterNote: "Character note",
+	rosterNoteBind: "Bind note...",
+	rosterNoteClear: "Unbind",
+	rosterNoteOpen: "Open note",
+	rosterNoNote: "Not bound",
+	rosterEdit: "Edit",
+	rosterSave: "Save",
+	rosterCancel: "Cancel",
+	rosterCreateAction: "Create",
+	rosterDelete: "Delete",
+	rosterDeleteConfirm: 'Delete pawn "{name}"? Locations keep the token and show it as unknown.',
+	rosterOnMap: "On map",
+
+	popoverDelete: "Delete location",
+	popoverUnknown: "Unknown pawns",
+	popoverAddToRoster: "Add to roster",
+	popoverEmptyRoster: "No pawns in the roster yet.",
+
+	commandOpenMap: "Open map tab",
+	commandOpenRoster: "Open roster tab",
+	commandOpenNote: "Open the note tab",
+	commandForgetChapter: "Forget this chapter's map",
+	commandAttachMap: "Attach an orphaned map to a note",
+	commandCleanupOrphans: "Remove orphaned maps",
+	commandExportData: "Export plugin data to the vault",
+	commandImportData: "Import plugin data (merge)",
+	commandReloadData: "Reload data.json from disk",
+	commandUpdateNote: "Update this chapter's note",
+	commandExportNotes: "Export notes to a visible folder",
+
+	settingsLanguage: "Language",
+	settingsOpenRoster: "Roster tab",
+	settingsOpenRosterDesc: "Manage characters next to the map instead of in this dialog.",
+	settingsDefaultView: "Tab to focus",
+	settingsDefaultViewMap: "Map",
+	settingsDefaultViewNote: "Note",
+	settingsDefaultViewRoster: "Roster",
+	settingsDefaultCanvas: "Default canvas size",
+	settingsDefaultCanvasHint: "Used when a map has no own size and no background image.",
+	settingsDataHeading: "Plugin data",
+	settingsExportPath: "Export file",
+	settingsExportPathHint: "A copy inside the vault, so your git or sync setup can see it.",
+	settingsExport: "Export now",
+	settingsImport: "Import (merge)",
+	settingsImportReplace: "Import (replace all)",
+	settingsReload: "Reload from disk",
+	settingsRestoreBackup: "Restore backup",
+	settingsExportNotes: "Export notes",
+	settingsExportNotesDesc:
+		"Copy every note from the hidden .Writer Maps Data/ folder into Writer Maps Export/, where the file tree and any other app can see it.",
+	settingsExportNotesButton: "Export notes to a visible folder",
+	settingsCleanupOrphans: "Orphaned maps",
+	settingsPrivacy:
+		"Everything lives in this plugin's data.json. The plugin never reads your notes and never writes to a chapter note. The only files it writes are your own notes in the hidden .Writer Maps Data/ folder, and only between its marker comments.",
+
+	noticeSaveFailed: "Could not save the plugin data: {message}",
+	noticeViewFailed: "The map panel hit an error: {message}",
+	noticePawnCreated: 'Character "{name}" created',
+	noticePawnNameRequired: "Character name cannot be empty",
+	noticeNoChapter: "Open a markdown note first",
+	noticeMapCreated: "Map created for {path}",
+	noticeMapForgotten: "Map data for {path} deleted",
+	noticeNoOrphans: "No orphaned maps",
+	noticeMapAttached: "Map attached to {path}",
+	noticeOrphansCleaned: "Removed {count} orphaned maps",
+	noticeExported: "Exported to {path}",
+	noticeImported: "Imported {maps} maps and {pawns} characters",
+	noticeReloaded: "Plugin data reloaded from disk",
+	noticeBackupRestored: "Backup restored",
+	noticeNoBackup: "No backup file found",
+	noticeNoteUpdated: "Note updated: {path}",
+	noticeNoteFailed: "Could not update the note at {path}: {message}",
+	noticeNoteUnbalanced: "The note markers in {path} are unbalanced — the file was left untouched.",
+	noticeNoteExported: "Exported {count} notes to {path}/",
+	noticeNoteExportEmpty: "There are no notes to export yet",
+
+	confirmForgetChapter: "Delete the stored map for {path}? Your note is not affected.",
+	confirmCleanupOrphans: "Delete {count} maps whose chapter no longer exists?",
+	confirmReload: "Reload data.json from disk and discard unsaved changes?",
+	confirmReplaceImport: "Replace all maps and characters with the contents of the export file?",
+	confirmRestoreBackup: "Restore data.json from its backup? Current data will be overwritten.",
+	confirmNoteExport:
+		"Writer Maps Export/ already holds {count} notes. Overwrite them with the current versions?",
+
+	pickerNotePlaceholder: "Type a note name to bind...",
+	pickerImagePlaceholder: "Type an image name to pick...",
+	pickerOrphanPlaceholder: "Which orphaned map should be attached?",
+	pickerNoResults: "No matches",
+
+	unknownPawnTitle: "Unknown",
+
+	/* ---------------------------------------------------------------------
+	   The author's note — the generated block between the two marker
+	   comments. Everything below is theirs alone.
+	   --------------------------------------------------------------------- */
+	notePlacementTitle: "### 📍 Character placement in this chapter:",
+	noteOffStoryTitle: "### ⚠️ Off story (left in the pool):",
+	noteEmptyLocation: "*Empty location*",
+	noteNoLocations: "*This chapter has no locations yet*",
+	noteUnnamedLocation: "Unnamed location",
+	noteFreeZone:
+		"Everything below this line is your own space. The plugin never reads, changes or erases what you write under %% wsm-summary-end %%.",
+} as const;
+
+export type TranslationKey = keyof typeof en;
+
+const ru: Record<TranslationKey, string> = {
+	viewMap: "Карта",
+	viewRoster: "Персонажи",
+	viewRelationship: "Связи",
+	viewNote: "WSM: Записка Главы",
+
+	/* ---- вкладка связей ---- */
+
+	relNoCast: "На карте этой главы пока никого нет. Поставьте персонажей на локацию — и они появятся здесь.",
+	relNoLinks: "Связей пока нет. Кликните по двум персонажам и выберите, что это за связь.",
+	relPickFirst: "Кликните по первому персонажу.",
+	relPickSecond: "Теперь — по второму.",
+	relKindTitle: "{a} и {b}: какая связь?",
+	relKindLabel: "— {kind} —",
+	relKindBlood: "Кровь",
+	relKindDebt: "Долг",
+	relKindSecret: "Тайна",
+	relListTitle: "Связи",
+	relOffMap: "Один из них не на этой карте, поэтому линия не проведена",
+	relRemove: "Убрать связь",
+	relCancel: "Отмена",
+	noticeLinkAdded: "{a} и {b}: {kind}",
+	noticeLinkKept: "Такая связь уже была другого рода. Она заменена.",
+	commandOpenRelationship: "Открыть вкладку связей",
+	settingsDefaultViewRelationship: "Связи",
+
+	emptyNoFileTitle: "Глава не открыта",
+	emptyNoFileHint: "Откройте markdown-файл — его карта берётся из data.json плагина.",
+	emptyNoMapTitle: "Для этой главы ещё нет карты",
+	emptyNoMapHint: "Карты хранит плагин, а не ваша заметка. Создайте карту, чтобы начать.",
+	emptyCreateMap: "Создать карту",
+	emptyNoBgHint: "Выберите фоновую картинку, затем дважды кликните по карте, чтобы добавить локацию.",
+	emptyNoNodesHint: "Дважды кликните по карте, чтобы создать первую локацию.",
+	emptyBrokenBgTitle: "Фон не найден",
+	emptyBrokenBgHint: 'В хранилище нет файла "{path}".',
+
+	mapSetBackground: "Задать фон",
+	mapChangeBackground: "Сменить фон",
+	mapClearBackground: "Убрать фон",
+
+	mapInheritFrom: "Наследовать от",
+	mapInheritSummary: "Локаций {nodes}, персонажей {pawns}",
+	mapInheritTitle: "Скопировать локации, персонажей, фон и размер холста",
+	mapInheritedFrom: "Наследовано от «{path}»",
+	mapChangeParent: "Сменить источник",
+	mapForgetParent: "Забыть главу-источник",
+	mapParentMissing: "Глава-источник не найдена — её переименовали или удалили",
+	mapPickParent: "Глава-источник",
+	noticeInherited: "Унаследовано из «{path}»: локаций {nodes}, персонажей {pawns}",
+	noticeInheritRefused: "На карте уже есть локации — ничего не скопировано.",
+	noticeParentSet: "Источник: «{path}»",
+	noticeParentCleared: "Глава-источник забыта",
+
+	rosterCreate: "Создать персонажа",
+	rosterEmptyTitle: "Список персонажей пуст",
+	rosterEmptyHint: "Персонажи живут здесь, а не в заметках. Создайте первого персонажа.",
+	rosterName: "Имя",
+	rosterNamePlaceholder: "например, Том",
+	rosterInitials: "Инициалы",
+	rosterInitialsHint: "1–3 символа поверх фона токена.",
+	rosterInitialsReset: "Авто",
+	rosterColor: "Цвет",
+	rosterTextColor: "Цвет инициалов",
+	rosterTextColorAuto: "Автоматически",
+	rosterTextColorWhite: "Белый",
+	rosterTextColorBlack: "Чёрный",
+	rosterTextColorRed: "Красный",
+	rosterAvatar: "Аватар",
+	rosterAvatarPick: "Выбрать картинку...",
+	rosterAvatarClear: "Убрать",
+	rosterNote: "Заметка персонажа",
+	rosterNoteBind: "Прикрепить файл...",
+	rosterNoteClear: "Открепить",
+	rosterNoteOpen: "Открыть заметку",
+	rosterNoNote: "Не прикреплена",
+	rosterEdit: "Изменить",
+	rosterSave: "Сохранить",
+	rosterCancel: "Отмена",
+	rosterCreateAction: "Создать",
+	rosterDelete: "Удалить",
+	rosterDeleteConfirm: 'Удалить персонажа "{name}"? В локациях останется токен, помеченный как неизвестный.',
+	rosterOnMap: "На карте",
+
+	popoverDelete: "Удалить локацию",
+	popoverUnknown: "Неизвестные персонажи",
+	popoverAddToRoster: "Добавить в список персонажей",
+	popoverEmptyRoster: "Список персонажей пока пуст.",
+
+	commandOpenMap: "Открыть вкладку карты",
+	commandOpenRoster: "Открыть вкладку персонажей",
+	commandOpenNote: "Открыть вкладку записки",
+	commandForgetChapter: "Забыть карту этой главы",
+	commandAttachMap: "Привязать осиротевшую карту к заметке",
+	commandCleanupOrphans: "Убрать осиротевшие карты",
+	commandExportData: "Выгрузить данные плагина в хранилище",
+	commandImportData: "Загрузить данные плагина (дополнить)",
+	commandReloadData: "Перезагрузить data.json с диска",
+	commandUpdateNote: "Обновить записку этой главы",
+	commandExportNotes: "Выгрузить записки в видимую папку",
+
+	settingsLanguage: "Язык",
+	settingsOpenRoster: "Вкладка персонажей",
+	settingsOpenRosterDesc: "Управляйте персонажами рядом с картой, а не в этом окне.",
+	settingsDefaultView: "Вкладка по умолчанию",
+	settingsDefaultViewMap: "Карта",
+	settingsDefaultViewNote: "Записка",
+	settingsDefaultViewRoster: "Персонажи",
+	settingsDefaultCanvas: "Размер холста по умолчанию",
+	settingsDefaultCanvasHint: "Используется, если у карты нет своего размера и нет фоновой картинки.",
+	settingsDataHeading: "Данные плагина",
+	settingsExportPath: "Файл выгрузки",
+	settingsExportPathHint: "Копия внутри хранилища — её видят ваш git или синхронизация.",
+	settingsExport: "Выгрузить сейчас",
+	settingsImport: "Загрузить (дополнить)",
+	settingsImportReplace: "Загрузить (заменить всё)",
+	settingsReload: "Перезагрузить с диска",
+	settingsRestoreBackup: "Восстановить из бэкапа",
+	settingsExportNotes: "Записки",
+	settingsExportNotesDesc:
+		"Скопировать все записки из скрытой папки .Writer Maps Data/ в папку Writer Maps Export/, где их увидят дерево файлов и любые другие программы.",
+	settingsExportNotesButton: "Выгрузить записки в видимую папку",
+	settingsCleanupOrphans: "Осиротевшие карты",
+	settingsPrivacy:
+		"Всё хранится в data.json этого плагина. Текст ваших заметок плагин никогда не читает и не изменяет. Единственные файлы, которые он пишет, — ваши записки в скрытой папке .Writer Maps Data/, и только между её маркерами.",
+
+	noticeSaveFailed: "Не удалось сохранить данные плагина: {message}",
+	noticeViewFailed: "Ошибка в панели карты: {message}",
+	noticePawnCreated: 'Персонаж "{name}" создан',
+	noticePawnNameRequired: "Имя персонажа не может быть пустым",
+	noticeNoChapter: "Сначала откройте markdown-файл",
+	noticeMapCreated: "Карта создана для {path}",
+	noticeMapForgotten: "Данные карты для {path} удалены",
+	noticeNoOrphans: "Осиротевших карт нет",
+	noticeMapAttached: "Карта привязана к {path}",
+	noticeOrphansCleaned: "Удалено осиротевших карт: {count}",
+	noticeExported: "Выгружено в {path}",
+	noticeImported: "Загружено карт: {maps}, персонажей: {pawns}",
+	noticeReloaded: "Данные плагина перезагружены с диска",
+	noticeBackupRestored: "Бэкап восстановлен",
+	noticeNoBackup: "Файл бэкапа не найден",
+	noticeNoteUpdated: "Записка обновлена: {path}",
+	noticeNoteFailed: "Не удалось обновить записку {path}: {message}",
+	noticeNoteUnbalanced: "Маркеры записки в {path} непарные — файл оставлен без изменений.",
+	noticeNoteExported: "Выгружено записей: {count} в {path}/",
+	noticeNoteExportEmpty: "Записок для выгрузки пока нет",
+
+	confirmForgetChapter: "Удалить сохранённую карту для {path}? На заметку это не повлияет.",
+	confirmCleanupOrphans: "Удалить {count} карт, у которых больше нет главы?",
+	confirmReload: "Перезагрузить data.json с диска и отбросить несохранённые изменения?",
+	confirmReplaceImport: "Заменить все карты и персонажей содержимым файла выгрузки?",
+	confirmRestoreBackup: "Восстановить data.json из бэкапа? Текущие данные будут перезаписаны.",
+	confirmNoteExport:
+		"В папке Writer Maps Export/ уже есть {count} записей. Перезаписать их текущими версиями?",
+
+	pickerNotePlaceholder: "Введите имя заметки для привязки...",
+	pickerImagePlaceholder: "Введите имя картинки...",
+	pickerOrphanPlaceholder: "Какую осиротевшую карту привязать?",
+	pickerNoResults: "Ничего не найдено",
+
+	unknownPawnTitle: "Неизвестная",
+
+	/* ---------------------------------------------------------------------
+	   Записка главы — генерируемый блок между двумя маркерами. Всё, что
+	   ниже, принадлежит автору.
+	   --------------------------------------------------------------------- */
+	notePlacementTitle: "### 📍 Размещение персонажей в этой главе:",
+	noteOffStoryTitle: "### ⚠️ Вне сюжета (остались в пуле):",
+	noteEmptyLocation: "*Локация пуста*",
+	noteNoLocations: "*В этой главе пока нет локаций*",
+	noteUnnamedLocation: "Без названия",
+	noteFreeZone:
+		"Здесь идет свободная зона автора. Всё, что написано ниже тега %% wsm-summary-end %%, плагин НИКОГДА не читает, не изменяет и не затирает.",
+};
+
+const dictionaries: Record<Language, Record<TranslationKey, string>> = { en, ru };
+
+/**
+ * Translate a key. Unknown placeholders are left as-is on purpose: a missing
+ * `{name}` is a much easier bug to spot in the UI than a silent empty string.
+ */
+export function t(lang: Language, key: TranslationKey, vars?: Record<string, string | number>): string {
+	let text: string = dictionaries[lang]?.[key] ?? en[key];
+	if (vars) {
+		for (const [name, value] of Object.entries(vars)) {
+			text = text.split(`{${name}}`).join(String(value));
+		}
+	}
+	return text;
+}
