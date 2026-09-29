@@ -17,6 +17,9 @@
     "map"
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=22.6"
+  },
   "devDependencies": {
     "builtin-modules": "^5.0.0",
     "esbuild": "^0.28.2",

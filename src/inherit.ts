@@ -109,6 +109,18 @@ function cloneNode(node: MapNode): MapNode {
 		}
 		copy.charOffsets = offsets;
 	}
+
+	// The nested-map fields come across as well, and a zone that loses its outline
+	// is not a zone any more — it is a door with nothing behind it, and the copy
+	// would open onto an empty level. The anchor goes with it for the same
+	// reason: it is the author's own placement, and re-deriving it is exactly the
+	// centroid this plugin refuses to compute.
+	if (node.kind !== undefined) copy.kind = node.kind;
+	if (node.zone) copy.zone = node.zone.map((corner) => ({ x: corner.x, y: corner.y }));
+	if (node.targetMapId !== undefined) copy.targetMapId = node.targetMapId;
+	if (node.anchor) copy.anchor = { x: node.anchor.x, y: node.anchor.y };
+	if (node.fill !== undefined) copy.fill = node.fill;
+
 	return copy;
 }
 

@@ -25,8 +25,12 @@ import {
 	replaceNodeToken,
 	setBackground,
 	setCanvasSize,
+	setNodeAnchor,
 	setParentChapter,
 	setPawnOnNode,
+	setZoneOutline,
+	setZoneTarget,
+	addZone,
 	addLink,
 	linkBetween,
 } from "../src/store.ts";
@@ -79,6 +83,22 @@ import { isNudged, placedPosition, radialSlot, ringRadius } from "../src/layout.
 import { moveCharOffsets, setCharOffset } from "../src/store.ts";
 import { inheritFrom, parentCandidates, parentIsStale, previewInherit, suggestParent } from "../src/inherit.ts";
 import type { InheritPreview } from "../src/inherit.ts";
+import {
+	childrenOf,
+	collectCast,
+	descendantsOf,
+	isEnterable,
+	isZone,
+	levelNodes,
+	pointInPolygon,
+	rootNodes,
+	sunLayout,
+	zoneAt,
+	zoneSelfIntersects,
+	zoneToPoints,
+	SUN_CAP,
+} from "../src/hierarchy.ts";
+import type { MapNode, ZonePoint } from "../src/types.ts";
 
 const FALLBACK = { width: 1024, height: 768 };
 const CHAPTER = "Chapters/Chapter 1.md";
@@ -471,6 +491,120 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 	assert.equal(view.parentChapterId, null, "and with no parent");
 }
 
+{
+	// The nested-map fields are read the same way as everything else in a
+	// hand-edited data.json: taken at their word, coerced, and never trusted.
+	const map = normalizeMap({
+		nodes: [
+			{
+				id: "west",
+				x: 0,
+				y: 0,
+				chars: [],
+				kind: "zone",
+				zone: [
+					{ x: 0, y: 0 },
+					{ x: 100, y: 0 },
+					{ x: 100, y: 80 },
+				],
+				targetMapId: "harbour",
+				anchor: { x: 40, y: 30 },
+				fill: "#3355ff",
+			},
+			{ id: "harbour", x: 10, y: 20, chars: ["tom"], targetMapId: "west" },
+		],
+	});
+
+	const [west, harbour] = map.nodes;
+	assert.equal(west.kind, "zone", "a zone is a zone because the file says so");
+	assert.equal(west.zone?.length, 3, "its three corners are kept");
+	assert.equal(west.targetMapId, "harbour", "and the map a click on it falls into");
+	assert.deepEqual(west.anchor, { x: 40, y: 30 }, "the author's own anchor survives");
+	assert.equal(west.fill, "#3355ff", "as does the custom hover colour");
+
+	// `harbour` pointed back at `west`: a two-node loop. Cutting the edge that
+	// closes it is enough, and the rest of the structure stays as the writer left
+	// it — the surviving link still means "clicking west takes you to harbour".
+	assert.equal("targetMapId" in (harbour as object), false, "the edge that closed the loop is the one cut");
+	assert.equal(west.targetMapId, "harbour", "while the surviving link is untouched");
+}
+
+{
+	// Every way the new fields can be wrong, and what has to survive anyway.
+	const map = normalizeMap({
+		nodes: [
+			// A self-reference: a map that switches to itself can never be walked
+			// into, and would be a one-node loop to every traversal.
+			{ id: "loop", x: 0, y: 0, chars: [], kind: "zone", targetMapId: "loop", zone: [] },
+			// A link to something that is not in this map at all.
+			{ id: "gone", x: 0, y: 0, chars: [], kind: "zone", targetMapId: "nowhere" },
+			// Two corners is a line, not an interior.
+			{ id: "line", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 9 }] },
+			// Rubbish everywhere, including the two numbers a polygon needs.
+			{ id: "junk", x: 0, y: 0, chars: [], zone: "not an array", anchor: { x: 5 }, fill: 42 },
+		],
+	});
+
+	const byId = new Map(map.nodes.map((node) => [node.id, node]));
+	assert.equal("targetMapId" in (byId.get("loop") as object), false, "a map that switches to itself loses the link");
+	assert.equal("targetMapId" in (byId.get("gone") as object), false, "a link to a node that is not there is dropped");
+	assert.equal("zone" in (byId.get("line") as object), false, "an unfinished outline is not an interior");
+	assert.equal("zone" in (byId.get("junk") as object), false, "a zone that is not an array is dropped");
+	assert.equal("anchor" in (byId.get("junk") as object), false, "half an anchor is no anchor");
+	assert.equal("fill" in (byId.get("junk") as object), false, "a colour that is not a colour is dropped");
+	assert.equal("kind" in (byId.get("junk") as object), false, "and no kind is invented from any of it");
+}
+
+{
+	// A colour is the one value the plugin does not read but hands to the DOM, so
+	// it is checked instead of merely coerced.
+	const map = normalizeMap({
+		nodes: [
+			{ id: "short", x: 0, y: 0, chars: [], fill: "#4f8" },
+			{ id: "long", x: 0, y: 0, chars: [], fill: "#4f8a2c" },
+			{ id: "alpha", x: 0, y: 0, chars: [], fill: "#4f8a2c80" },
+			{ id: "named", x: 0, y: 0, chars: [], fill: "teal" },
+			{ id: "func", x: 0, y: 0, chars: [], fill: "rgba(20, 30, 40, 0.4)" },
+			{ id: "url", x: 0, y: 0, chars: [], fill: "url(evil.svg)" },
+			{ id: "words", x: 0, y: 0, chars: [], fill: "javascript:alert(1)" },
+			{ id: "num", x: 0, y: 0, chars: [], fill: 42 },
+		],
+	});
+	const fill = (id: string) => map.nodes.find((node) => node.id === id)?.fill;
+
+	assert.equal(fill("short"), "#4f8", "a short hex is a colour");
+	assert.equal(fill("long"), "#4f8a2c", "a long hex is a colour");
+	assert.equal(fill("alpha"), "#4f8a2c80", "a hex with an alpha byte is a colour");
+	assert.equal(fill("named"), "teal", "a named colour is a colour");
+	assert.equal(fill("func"), "rgba(20, 30, 40, 0.4)", "an rgb/rgba function is a colour");
+	assert.equal(fill("url"), undefined, "a url() is not a colour and never reaches the DOM");
+	assert.equal(fill("words"), undefined, "and neither is arbitrary text that only looks like one");
+	assert.equal(fill("num"), undefined, "a number is not silently turned into the string \"42\"");
+}
+
+{
+	// `kind: "zone"` is not implied by an outline, and an outline alone is not
+	// implied to be a door: a pin the author drew around something stays a pin.
+	const map = normalizeMap({
+		nodes: [
+			{
+				id: "shape_only",
+				x: 0,
+				y: 0,
+				chars: [],
+				zone: [
+					{ x: 0, y: 0 },
+					{ x: 10, y: 0 },
+					{ x: 10, y: 10 },
+				],
+			},
+			{ id: "door_only", x: 0, y: 0, chars: [], kind: "zone" },
+		],
+	});
+	assert.equal("kind" in (map.nodes[0] as object), false, "an outline does not make the element a door");
+	assert.equal(map.nodes[1].kind, "zone", "and a door without one is still declared a zone");
+}
+
 /* ------------------------------------------------------------------ *
  * inherit.ts: taking one chapter's layout as the next one's start     *
  * ------------------------------------------------------------------ */
@@ -650,6 +784,61 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 }
 
 {
+	// A whole nested map has to arrive, or the new chapter opens on a world with
+	// no regions in it. Every field that makes an element a door is copied, and
+	// the copy is as independent as the rest.
+	const store: ChapterMaps = {
+		"Глава 1.md": {
+			map_bg: null,
+			nodes: [
+				{
+					id: "west",
+					label: "Запад",
+					x: 10,
+					y: 20,
+					chars: [],
+					kind: "zone",
+					zone: [
+						{ x: 0, y: 0 },
+						{ x: 100, y: 0 },
+						{ x: 100, y: 100 },
+					],
+					anchor: { x: 40, y: 30 },
+					fill: "#3355ff",
+					targetMapId: "harbour",
+				},
+				{ id: "harbour", x: 30, y: 40, chars: ["tom"], targetMapId: "inn" },
+				{ id: "inn", x: 50, y: 60, chars: ["aya"] },
+			],
+		},
+		"Глава 2.md": { map_bg: null, nodes: [] },
+	};
+
+	inheritFrom(store, "Глава 2.md", "Глава 1.md");
+	const copy = store["Глава 2.md"];
+
+	assert.deepEqual(copy.nodes, store["Глава 1.md"].nodes, "the whole forest comes across, links and all");
+	assert.deepEqual(levelNodes(copy.nodes, []).map((node) => node.id), ["west"], "and the new chapter opens on the same world");
+	assert.deepEqual(
+		levelNodes(copy.nodes, ["west"]).map((node) => node.id),
+		["harbour"],
+		"with the same region inside it",
+	);
+	assert.deepEqual(levelNodes(copy.nodes, ["west", "harbour"]).map((node) => node.id), ["inn"], "and the same town inside that");
+	assert.deepEqual(collectCast(copy.nodes, "west"), ["tom", "aya"], "and the same cast around its anchor");
+
+	// Independence, corner by corner: a chapter that rearranges its regions must
+	// not reach back into the one it was copied from.
+	const copiedZone = copy.nodes[0];
+	copiedZone.zone![0].x = 500;
+	copiedZone.anchor!.y = 500;
+	copiedZone.fill = "#ff0000";
+	assert.equal(store["Глава 1.md"].nodes[0].zone![0].x, 0, "redrawing a copied outline leaves the original alone");
+	assert.equal(store["Глава 1.md"].nodes[0].anchor!.y, 30, "and so does moving its anchor");
+	assert.equal(store["Глава 1.md"].nodes[0].fill, "#3355ff", "and recolouring it");
+}
+
+{
 	// A source that declared neither a background nor a size must not write nulls
 	// over the target: nulls would shadow the image and the default size.
 	const store: ChapterMaps = {
@@ -738,6 +927,308 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 	// And the fix is the same call that re-pointed it in the first place.
 	setParentChapter(store, "Глава 3.md", "Глава 2.md");
 	assert.equal(parentIsStale(store, "Глава 3.md"), false, "re-pointing clears the staleness");
+}
+
+/* ------------------------------------------------------------------ *
+ * hierarchy.ts: the nested maps                                        *
+ * ------------------------------------------------------------------ */
+
+{
+	// A square, drawn the way an author draws one: corners in whatever order the
+	// clicks landed. Ray casting answers "inside" for the middle and "outside"
+	// for everything beyond the edges.
+	const square: ZonePoint[] = [
+		{ x: 0, y: 0 },
+		{ x: 100, y: 0 },
+		{ x: 100, y: 100 },
+		{ x: 0, y: 100 },
+	];
+
+	assert.equal(pointInPolygon({ x: 50, y: 50 }, square), true, "the middle of a square is inside it");
+	assert.equal(pointInPolygon({ x: 150, y: 50 }, square), false, "past the right edge is outside");
+	assert.equal(pointInPolygon({ x: -1, y: 50 }, square), false, "past the left edge is outside");
+	assert.equal(pointInPolygon({ x: 50, y: -1 }, square), false, "above the top edge is outside");
+	assert.equal(pointInPolygon({ x: 50, y: 101 }, square), false, "below the bottom edge is outside");
+
+	// The corner cases that make or break a counting algorithm. Each of these has
+	// a wrong answer waiting for it, and the wrong answer is always "outside".
+	assert.equal(pointInPolygon({ x: 0, y: 0 }, square), true, "a corner counts as inside");
+	assert.equal(pointInPolygon({ x: 0, y: 50 }, square), true, "a point on the left edge is inside");
+	assert.equal(pointInPolygon({ x: 100, y: 50 }, square), true, "a point on the right edge is inside");
+	assert.equal(pointInPolygon({ x: 50, y: 0 }, square), true, "a point on the top edge is inside");
+	assert.equal(pointInPolygon({ x: 50, y: 100 }, square), true, "a point on the bottom edge is inside too");
+	assert.equal(pointInPolygon({ x: 200, y: 0 }, square), false, "but a point on the line past the edge is not");
+
+	// A concave outline: the notch is outside even though it is inside the
+	// bounding box, which is the whole reason a bounding box is not good enough.
+	const arrow: ZonePoint[] = [
+		{ x: 0, y: 0 },
+		{ x: 100, y: 0 },
+		{ x: 100, y: 100 },
+		{ x: 50, y: 40 },
+		{ x: 0, y: 100 },
+	];
+	assert.equal(pointInPolygon({ x: 50, y: 20 }, arrow), true, "the head of the arrow is solid");
+	assert.equal(pointInPolygon({ x: 50, y: 80 }, arrow), false, "the notch under it is not, though it shares the bounding box");
+
+	// A triangle, and a figure with a horizontal edge, which the half-open
+	// comparison exists for.
+	const triangle: ZonePoint[] = [
+		{ x: 0, y: 0 },
+		{ x: 100, y: 0 },
+		{ x: 50, y: 100 },
+	];
+	assert.equal(pointInPolygon({ x: 50, y: 10 }, triangle), true, "inside a triangle near its base");
+	assert.equal(pointInPolygon({ x: 50, y: 95 }, triangle), true, "and near its point");
+	assert.equal(pointInPolygon({ x: 2, y: 50 }, triangle), false, "outside it, to the left");
+
+	const flat: ZonePoint[] = [
+		{ x: 0, y: 0 },
+		{ x: 100, y: 0 },
+		{ x: 100, y: 100 },
+		{ x: 50, y: 100 },
+		{ x: 50, y: 40 },
+		{ x: 0, y: 40 },
+	];
+	assert.equal(pointInPolygon({ x: 75, y: 20 }, flat), true, "a shape with a horizontal edge is still solid at its top");
+	assert.equal(pointInPolygon({ x: 25, y: 70 }, flat), false, "and still has the notch cut out of it");
+
+	// Fewer than three corners encloses nothing, whatever the author meant.
+	assert.equal(pointInPolygon({ x: 0, y: 0 }, []), false, "an empty outline contains nothing");
+	assert.equal(pointInPolygon({ x: 0, y: 0 }, [{ x: 0, y: 0 }, { x: 1, y: 1 }]), false, "a line contains nothing");
+}
+
+{
+	// Which zone a click landed in. Overlapping outlines are allowed, and the
+	// last one drawn wins — the same rule stacked SVG shapes follow, and the only
+	// one the writer can predict from what they did.
+	const nodes: MapNode[] = [
+		{
+			id: "west",
+			x: 0,
+			y: 0,
+			chars: [],
+			kind: "zone",
+			zone: [
+				{ x: 0, y: 0 },
+				{ x: 100, y: 0 },
+				{ x: 100, y: 100 },
+				{ x: 0, y: 100 },
+			],
+		},
+		{
+			id: "inner",
+			x: 0,
+			y: 0,
+			chars: [],
+			kind: "zone",
+			zone: [
+				{ x: 20, y: 20 },
+				{ x: 60, y: 20 },
+				{ x: 60, y: 60 },
+				{ x: 20, y: 60 },
+			],
+		},
+		{ id: "harbour", x: 30, y: 30, chars: [] },
+	];
+
+	assert.equal(zoneAt(nodes, { x: 10, y: 10 })?.id, "west", "a click in the outer outline");
+	assert.equal(zoneAt(nodes, { x: 40, y: 40 })?.id, "inner", "a click where two overlap picks the one drawn last");
+	assert.equal(zoneAt(nodes, { x: 200, y: 200 }), null, "a click on empty map is in no zone");
+	assert.equal(zoneAt(nodes, { x: 30, y: 30 })?.id, "inner", "and a pin inside a zone is not what was hit");
+
+	// A pin is never a zone, however its outline happens to be shaped.
+	assert.equal(zoneAt([{ ...nodes[0], kind: "pin" }], { x: 50, y: 50 }), null, "an outline alone does not catch the click");
+}
+
+{
+	// The forest: World -> Region -> Location, as one flat array.
+	const nodes: MapNode[] = [
+		{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "harbour" },
+		{ id: "harbour", x: 0, y: 0, chars: ["tom"], targetMapId: "inn" },
+		{ id: "inn", x: 0, y: 0, chars: ["aya"] },
+		{ id: "east", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }], targetMapId: "mill" },
+		{ id: "mill", x: 0, y: 0, chars: ["kim"] },
+	];
+
+	assert.deepEqual(rootNodes(nodes).map((node) => node.id), ["west", "east"], "only the nodes nothing switches to are on top");
+	assert.deepEqual(childrenOf(nodes, "west").map((node) => node.id), ["harbour"], "a region's children are where its own link leads");
+	assert.deepEqual(
+		descendantsOf(nodes, "west").map((node) => node.id),
+		["harbour", "inn"],
+		"the whole chain below it, nearest first",
+	);
+	assert.deepEqual(descendantsOf(nodes, "inn"), [], "a location has nothing below it");
+	// A leaf is not a root. `inn` is the floor of a chain, and being the last link
+	// says nothing about where it is shown.
+	assert.equal(rootNodes(nodes).includes(nodes[2] as MapNode), false, "a leaf inside a region stays inside it");
+
+	// The level the view is showing. An empty stack is the top of the chapter.
+	assert.deepEqual(levelNodes(nodes, []).map((node) => node.id), ["west", "east"], "no trail means the world");
+	assert.deepEqual(levelNodes(nodes, ["west"]).map((node) => node.id), ["harbour"], "one step down");
+	assert.deepEqual(levelNodes(nodes, ["west", "harbour"]).map((node) => node.id), ["inn"], "two steps down");
+	assert.deepEqual(levelNodes(nodes, ["west", "harbour", "inn"]), [], "and the floor is an honest empty level, not the level above");
+
+	// A stack naming a node that was deleted drops the writer back a level
+	// instead of to nothing.
+	assert.deepEqual(
+		levelNodes(nodes, ["west", "gone"]).map((node) => node.id),
+		["harbour"],
+		"a level whose node is gone falls back to the level above it",
+	);
+	assert.deepEqual(levelNodes(nodes, ["gone"]).map((node) => node.id), ["west", "east"], "and to the world when there is no level above");
+
+	assert.equal(isZone(nodes[0]), true, "a zone with three corners is a zone");
+	assert.equal(isEnterable(nodes, nodes[0]), true, "and leads somewhere, so it can be entered");
+	assert.equal(isEnterable(nodes, nodes[2]), false, "a location leads nowhere");
+	assert.equal(isZone({ ...nodes[0], zone: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }), false, "an unfinished outline is not a zone");
+
+	// A hand-edited loop is not a level anybody can stand on: every node in it is
+	// something else switches to, so the world would be empty and the writer
+	// would have no way back out.
+	const loop: MapNode[] = [
+		{ id: "a", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "b" },
+		{ id: "b", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "a" },
+	];
+	assert.deepEqual(collectCast(loop, "a").length, 0, "a loop is walked once, not forever");
+	assert.deepEqual(levelNodes(loop, ["a"]).map((node) => node.id), ["b"], "and stops at the repeat");
+}
+
+{
+	// The sun: everyone under a zone, however deep, gathered in one ring.
+	const nodes: MapNode[] = [
+		{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "harbour" },
+		{ id: "harbour", x: 0, y: 0, chars: ["tom", "aya"], targetMapId: "inn" },
+		{ id: "inn", x: 0, y: 0, chars: ["tom", "kim"] },
+		{ id: "east", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }], targetMapId: "mill" },
+		{ id: "mill", x: 0, y: 0, chars: ["bob"] },
+	];
+
+	assert.deepEqual(
+		collectCast(nodes, "west"),
+		["tom", "aya", "kim"],
+		"the region's own characters and its towns', each one once",
+	);
+	assert.deepEqual(collectCast(nodes, "harbour"), ["tom", "kim"], "a town gathers only its own");
+	assert.deepEqual(collectCast(nodes, "mill"), [], "a location gathers nobody");
+	assert.deepEqual(collectCast(nodes, "east"), ["bob"], "another region is a different sun");
+
+	// A character in two towns of the same region is one token. Drawing them
+	// twice would say they were in two places at once, which is the sort of claim
+	// the map exists to prevent.
+	assert.equal(collectCast(nodes, "west").filter((token) => token === "tom").length, 1, "a character standing twice is still one");
+
+	// The cap. What does not fit is counted, not dropped and not squeezed in.
+	const many = Array.from({ length: SUN_CAP + 5 }, (_, i) => `p${i}`);
+	const cast: MapNode[] = [
+		{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "crowded" },
+		{ id: "crowded", x: 0, y: 0, chars: many },
+	];
+	assert.equal(sunLayout(collectCast(cast, "west")).shown.length, SUN_CAP, "the ring draws as many as it can hold");
+	assert.equal(sunLayout(collectCast(cast, "west")).overflow, "+5", "and the rest is a count the writer can click");
+	assert.equal(sunLayout(["tom", "aya"]).overflow, null, "a cast that fits has no count at all");
+}
+
+{
+	// The outline as the DOM needs it, and the one shape worth refusing to close.
+	assert.equal(
+		zoneToPoints([
+			{ x: 0, y: 0 },
+			{ x: 10, y: 0 },
+			{ x: 10, y: 10 },
+		]),
+		"0,0 10,0 10,10",
+		"corners as an SVG points list",
+	);
+
+	assert.equal(zoneSelfIntersects([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }]), false, "a square is not a bow tie");
+	assert.equal(zoneSelfIntersects([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 10 }, { x: 10, y: 10 }]), true, "a bow tie is");
+	assert.equal(
+		zoneSelfIntersects([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 5, y: 5 }, { x: 0, y: 10 }]),
+		false,
+		"a notch is a concavity, not a crossing",
+	);
+	// Two rooms sharing a wall: the corner sits on the other edge, which is a
+	// touch and not a crossing, and refusing it would reject a normal drawing.
+	assert.equal(
+		zoneSelfIntersects([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 5, y: 10 }, { x: 5, y: 5 }, { x: 0, y: 5 }]),
+		false,
+		"a shared wall is not a crossing",
+	);
+	assert.equal(zoneSelfIntersects([{ x: 0, y: 0 }, { x: 10, y: 0 }]), false, "too few corners to cross anything");
+}
+
+{
+	// The store side of a nested map: making a zone, pointing it somewhere, and
+	// taking it apart again without losing what was inside it.
+	const store: ChapterMaps = { [CHAPTER]: { map_bg: null, nodes: [] } };
+	const square = [
+		{ x: 0, y: 0 },
+		{ x: 100, y: 0 },
+		{ x: 100, y: 100 },
+		{ x: 0, y: 100 },
+	];
+
+	const zoneId = addZone(store, CHAPTER, "zone", square);
+	const zone = store[CHAPTER].nodes[0];
+	assert.equal(zone.kind, "zone", "a new zone is born a zone");
+	assert.deepEqual(zone.zone, square, "with the outline exactly as it was clicked out");
+	// The label sits at the corner the outline started from, because nothing here
+	// is allowed to work out a middle for it.
+	assert.deepEqual({ x: zone.x, y: zone.y }, { x: 0, y: 0 }, "and its label starts at the first corner, not at a computed centre");
+	assert.equal(childrenOf(store[CHAPTER].nodes, zoneId).length, 0, "a new zone has nothing behind it yet");
+	assert.equal(isEnterable(store[CHAPTER].nodes, zone), false, "so it cannot be entered yet");
+
+	// Into the zone.
+	const cityId = addNode(store, CHAPTER, "harbour", 20, 30);
+	assert.equal(setZoneTarget(store, CHAPTER, zoneId, cityId), true, "a zone can be pointed at what is inside it");
+	assert.equal(isEnterable(store[CHAPTER].nodes, zone), true, "and becomes a door");
+	assert.deepEqual(levelNodes(store[CHAPTER].nodes, [zoneId]).map((node) => node.id), [cityId], "which is what entering it shows");
+
+	// The anchor, and only the anchor: a point, placed by the author.
+	assert.equal(setNodeAnchor(store, CHAPTER, zoneId, 40, 30), true, "the anchor is placed");
+	assert.deepEqual(store[CHAPTER].nodes[0].anchor, { x: 40, y: 30 }, "and stored as given");
+	assert.deepEqual(collectCast(store[CHAPTER].nodes, zoneId), [], "a zone with nobody in it gathers nobody");
+
+	// The links that cannot be walked.
+	assert.equal(setZoneTarget(store, CHAPTER, zoneId, zoneId), false, "a zone cannot lead to itself");
+	assert.equal(setZoneTarget(store, CHAPTER, zoneId, "nowhere"), false, "nor from something that is not on the map");
+	assert.equal(setZoneTarget(store, CHAPTER, zoneId, cityId), false, "pointing at the same place again reports no change");
+	assert.equal(store[CHAPTER].nodes[0].targetMapId, cityId, "and the refused ones left it as it was");
+
+	// A map cannot lead back into itself, or the chain would be a loop with no
+	// end to walk and no level to come back to.
+	assert.equal(setZoneTarget(store, CHAPTER, cityId, zoneId), false, "the map a zone opens cannot open back into it");
+	assert.equal("targetMapId" in store[CHAPTER].nodes[1], false, "and the refused link is not written at all");
+
+	// Forgetting where a zone leads is allowed: an empty door is a normal state.
+	assert.equal(setZoneTarget(store, CHAPTER, zoneId, null), true, "a zone can stop leading anywhere");
+	assert.equal("targetMapId" in store[CHAPTER].nodes[0], false, "the key is removed, not blanked");
+	assert.equal(setZoneTarget(store, CHAPTER, zoneId, null), false, "and doing it twice reports no change");
+}
+
+{
+	// Deleting a zone must not take its contents with it, and must not leave a
+	// link pointing at nothing either — either way they would be on no level at all.
+	const store: ChapterMaps = {
+		[CHAPTER]: {
+			map_bg: null,
+			nodes: [
+				{ id: "zone", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }] },
+				{ id: "harbour", x: 10, y: 20, chars: ["tom"], targetMapId: "zone" },
+				{ id: "mill", x: 30, y: 40, chars: ["kim"] },
+			],
+		},
+	};
+
+	assert.equal(deleteNode(store, CHAPTER, "zone"), true, "the zone goes");
+	assert.deepEqual(store[CHAPTER].nodes.map((node) => node.id), ["harbour", "mill"], "and what was inside it is still there");
+	assert.equal("targetMapId" in store[CHAPTER].nodes[0], false, "let go of the link that no longer leads anywhere");
+	assert.deepEqual(
+		rootNodes(store[CHAPTER].nodes).map((node) => node.id),
+		["harbour", "mill"],
+		"and back on the world map, where they can be reached again",
+	);
 }
 
 /* ------------------------------------------------------------------ *
@@ -3049,6 +3540,11 @@ function relLines(view: RelationshipView): FakeElement[] {
 	);
 	assert.equal(relLines(view).length, 1, "and the tie is drawn");
 	assert.ok(hasAttrClass(relLines(view)[0], "is-blood"), "in the colour and dash of its kind");
+	assert.equal(
+		relLines(view)[0].getAttribute("vector-effect"),
+		"non-scaling-stroke",
+		"and pinned to the screen, so a narrow sidebar does not fatten the thread",
+	);
 	assert.ok(
 		labelOf((view as unknown as RelInternals).root).includes("Tom"),
 		"the list underneath spells the pair out in names",

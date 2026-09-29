@@ -4,7 +4,8 @@ import { addLink, readMap, removeLink } from "./store";
 import type { ChapterLink, LinkKind, Pawn } from "./types";
 import type { TranslationKey } from "./i18n";
 import { colorForToken, indexPawns, textColorClasses } from "./pawns";
-import { placedPosition } from "./layout";
+import { radialSlots } from "./layout";
+import type { Slot } from "./layout";
 
 export const VIEW_TYPE_RELATIONSHIP = "writer-state-map-relationship";
 
@@ -171,10 +172,11 @@ export class RelationshipView extends ItemView {
 		svg.setAttribute("class", "wsm-rel__canvas");
 
 		// Vertices first, in ring order, so a later tie can never be hidden
-		// behind an avatar.
-		const slots = new Map<string, { x: number; y: number }>();
-		vertices.forEach((vertex, indexInRing) => {
-			slots.set(vertex.token, placedPosition(indexInRing, vertices.length, undefined));
+		// behind an avatar. The very same ring the map draws around a pin, so the
+		// cast reads the same way in both tabs.
+		const slots = new Map<string, Slot>();
+		radialSlots(vertices.length).forEach((slot, indexInRing) => {
+			slots.set(vertices[indexInRing].token, slot);
 		});
 
 		for (const link of links) {
@@ -188,6 +190,10 @@ export class RelationshipView extends ItemView {
 			line.setAttribute("y1", String(from.y));
 			line.setAttribute("x2", String(to.x));
 			line.setAttribute("y2", String(to.y));
+			// Without this the thread would thicken as the graph scaled up to fill
+			// the panel and fade away as the sidebar narrowed, which is the same
+			// reason the map's own spokes pin their stroke.
+			line.setAttribute("vector-effect", "non-scaling-stroke");
 			// The kind is the only thing the line has to say, so it is carried by
 			// one class that CSS turns into a colour and a dash pattern.
 			line.setAttribute("class", `wsm-rel__line is-${link.kind}`);

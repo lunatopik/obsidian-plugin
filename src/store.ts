@@ -9,6 +9,7 @@ import type {
 	Pawn,
 	PawnTextColor,
 	StoredChapterMap,
+	ZonePoint,
 } from "./types";
 import { initialsFromName, PLACEHOLDER_INITIALS } from "./pawns";
 import { isManagedPath } from "./notes";
@@ -50,6 +51,27 @@ function asNumber(value: unknown): number | null {
 function asStringArray(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	return value.map(asString).filter((item): item is string => item !== null && item.length > 0);
+}
+
+/**
+ * A colour, or nothing.
+ *
+ * Unlike a label, a colour is not a string the plugin reads — it is handed
+ * straight to a `fill` attribute. So it is checked rather than coerced: the
+ * handful of CSS shapes that are actually useful, and nothing else. A hand-edited
+ * "#4f8" works, a stray 42 becomes no colour at all rather than a broken one, and
+ * a long run of arbitrary text never reaches the DOM.
+ */
+function asColor(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const color = value.trim();
+	if (!color) return null;
+	if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(color)) return color;
+	if (/^(?:rgb|rgba|hsl|hsla)\([0-9a-z%.,\s/-]+\)$/i.test(color)) return color;
+	// A named colour, in English only: `currentColor` and friends, never a
+	// document-scoped keyword that would resolve against someone else's page.
+	if (/^[a-z]+$/i.test(color)) return color;
+	return null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -134,6 +156,70 @@ function parseCharOffsets(raw: unknown, chars: string[]): Record<string, CharOff
 	return Object.keys(offsets).length > 0 ? offsets : undefined;
 }
 
+/** Coerce a hand-written outline into clean corners; anything too small is dropped. */
+function parseZone(raw: unknown): ZonePoint[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+
+	const corners: ZonePoint[] = [];
+	for (const entry of raw) {
+		const record = asRecord(entry);
+		if (!record) continue;
+		const x = asNumber(record.x);
+		const y = asNumber(record.y);
+		if (x === null || y === null) continue;
+		corners.push({ x, y });
+	}
+
+	// Fewer than three corners encloses nothing: that is an outline the author has
+	// not finished, not a region. Storing it would make a line clickable.
+	return corners.length >= 3 ? corners : undefined;
+}
+
+/** Coerce a hand-written anchor; a partial one is no anchor at all. */
+function parseAnchor(raw: unknown): { x: number; y: number } | undefined {
+	const record = asRecord(raw);
+	if (!record) return undefined;
+	const x = asNumber(record.x);
+	const y = asNumber(record.y);
+	if (x === null || y === null) return undefined;
+	return { x, y };
+}
+
+/**
+ * Cut the links that cannot mean anything, so a map is always a forest.
+ *
+ * Two ways a hand-edited or imported file gets a link that cannot be walked: the
+ * target does not exist (a node was deleted), or the chain loops back on itself
+ * (two nodes naming each other, which a rename or a copy can easily produce). A
+ * loop is the dangerous one, because every traversal that respects the links
+ * would then run forever — inside a render, on a file load. Cutting the edge
+ * that closes the loop keeps the rest of the structure and the writer's work.
+ */
+function pruneHierarchy(nodes: MapNode[]): void {
+	const byId = new Map(nodes.map((node) => [node.id, node]));
+
+	for (const node of nodes) {
+		if (node.targetMapId && !byId.has(node.targetMapId)) delete node.targetMapId;
+	}
+
+	for (const start of nodes) {
+		// `seen` only ever grows and is bounded by the node count, so the walk
+		// terminates whatever the file said.
+		const seen = new Set<string>([start.id]);
+		let current: MapNode | undefined = start;
+		while (current?.targetMapId) {
+			const next = byId.get(current.targetMapId);
+			if (!next) break;
+			if (seen.has(next.id)) {
+				delete current.targetMapId;
+				break;
+			}
+			seen.add(next.id);
+			current = next;
+		}
+	}
+}
+
 function parseNodes(raw: unknown): MapNode[] {
 	if (!Array.isArray(raw)) return [];
 
@@ -159,8 +245,29 @@ function parseNodes(raw: unknown): MapNode[] {
 		const offsets = parseCharOffsets(record.charOffsets, chars);
 		if (offsets) node.charOffsets = offsets;
 
+		// "zone" is spelled out rather than inferred: an element only becomes a
+		// door when the file says so, and a node that is merely a zone with no
+		// interior yet stays a pin instead of eating clicks on the map.
+		if (asString(record.kind) === "zone") node.kind = "zone";
+
+		const zone = parseZone(record.zone);
+		if (zone) node.zone = zone;
+
+		// A map that switches to itself is a door onto nothing, whatever the file
+		// says. The loop that spans several nodes is cut in `pruneHierarchy`.
+		const target = asString(record.targetMapId);
+		if (target && target !== id) node.targetMapId = target;
+
+		const anchor = parseAnchor(record.anchor);
+		if (anchor) node.anchor = anchor;
+
+		const fill = asColor(record.fill);
+		if (fill) node.fill = fill;
+
 		nodes.push(node);
 	}
+
+	pruneHierarchy(nodes);
 	return nodes;
 }
 
@@ -287,7 +394,7 @@ function parseLinks(raw: unknown): ChapterLink[] | undefined {
 		if (!first || !second || first === second) continue;
 
 		const [a, b] = first < second ? [first, second] : [second, first];
-		const key = `${a} ${b}`;
+		const key = `${a}\0${b}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
 		links.push({ a, b, kind });
@@ -442,7 +549,135 @@ export function deleteNode(maps: ChapterMaps, path: string, nodeId: string): boo
 
 	const before = map.nodes.length;
 	map.nodes = map.nodes.filter((node) => node.id !== nodeId);
-	return map.nodes.length !== before;
+	if (map.nodes.length === before) return false;
+
+	// Anything that was entered through the deleted node is let go rather than
+	// orphaned. A link to a node that no longer exists is a link nobody can walk,
+	// and the things behind it would be on no level at all — invisible but still
+	// in data.json, which is the one kind of lost work this plugin does not do.
+	for (const node of map.nodes) {
+		if (node.targetMapId === nodeId) delete node.targetMapId;
+	}
+
+	return true;
+}
+
+/**
+ * Add a zone: a closed outline the author clicked out.
+ *
+ * `x`/`y` are the corner the outline started from, which is where its label
+ * sits. Deliberately not a computed middle: the outline is whatever shape was
+ * drawn, so anything derived from it would be a place the writer never chose.
+ * The zone is born without children and therefore cannot be entered yet — that
+ * is what `setZoneTarget` is for, and a door with nothing behind it is better
+ * than a door that opens onto the world.
+ */
+export function addZone(
+	maps: ChapterMaps,
+	path: string,
+	desiredId: string,
+	corners: ZonePoint[],
+): string {
+	const map = ensureMap(maps, path);
+	const usedId = uniqueNodeId(desiredId, map.nodes);
+	const first = corners[0] ?? { x: 0, y: 0 };
+	map.nodes.push({
+		id: usedId,
+		x: Math.round(first.x),
+		y: Math.round(first.y),
+		chars: [],
+		kind: "zone",
+		zone: corners.map((corner) => ({ x: corner.x, y: corner.y })),
+	});
+	return usedId;
+}
+
+/**
+ * Point a zone at the map a click on it falls into.
+ *
+ * Refuses a self-reference, a target that is not on this chapter's map, and — the
+ * one that would be a genuine trap — a target that is already inside this zone,
+ * because that would make the chain a loop the render has to walk.
+ */
+export function setZoneTarget(maps: ChapterMaps, path: string, nodeId: string, targetId: string | null): boolean {
+	const map = maps[path];
+	const node = map && findNode(map, nodeId);
+	if (!node) return false;
+
+	if (targetId === null || targetId === "") {
+		if (node.targetMapId === undefined) return false;
+		delete node.targetMapId;
+		return true;
+	}
+
+	if (targetId === nodeId) return false;
+	if (!findNode(map, targetId)) return false;
+	// The chain runs the way it is walked, so the target is this zone's
+	// descendant. Letting one of them point back would make a loop there is no
+	// end of, and the map would have no top level to come back to.
+	if (isDescendantId(map.nodes, targetId, nodeId)) return false;
+
+	if (node.targetMapId === targetId) return false;
+	node.targetMapId = targetId;
+	return true;
+}
+
+/** Whether `fromId` can be reached by following `targetId`'s chain. */
+function isDescendantId(nodes: readonly MapNode[], targetId: string, fromId: string): boolean {
+	const byId = new Map(nodes.map((node) => [node.id, node]));
+	const seen = new Set<string>();
+
+	let current: MapNode | undefined = byId.get(targetId);
+	while (current?.targetMapId) {
+		if (current.targetMapId === fromId) return true;
+		if (seen.has(current.id)) return false;
+		seen.add(current.id);
+		current = byId.get(current.targetMapId);
+	}
+
+	return false;
+}
+
+/**
+ * Place the point a zone's cast is drawn around.
+ *
+ * The author's own click, stored as given. There is deliberately no fallback to
+ * the node's coordinates and nothing derived from the outline: a sun drawn at a
+ * point nobody chose is a claim about the story that nobody made.
+ */
+export function setNodeAnchor(
+	maps: ChapterMaps,
+	path: string,
+	nodeId: string,
+	x: number,
+	y: number,
+): boolean {
+	const map = maps[path];
+	const node = map && findNode(map, nodeId);
+	if (!node) return false;
+
+	node.anchor = { x: Math.round(x), y: Math.round(y) };
+	return true;
+}
+
+/** Replace a zone's outline wholesale, as a redraw does. */
+export function setZoneOutline(
+	maps: ChapterMaps,
+	path: string,
+	nodeId: string,
+	corners: ZonePoint[],
+): boolean {
+	const map = maps[path];
+	const node = map && findNode(map, nodeId);
+	if (!node || !node.zone) return false;
+	if (corners.length < 3) return false;
+
+	node.zone = corners.map((corner) => ({ x: corner.x, y: corner.y }));
+	// The label follows the outline's own starting corner, so a redraw that moved
+	// the shape does not leave the name behind in the middle of nothing.
+	node.x = Math.round(corners[0].x);
+	node.y = Math.round(corners[0].y);
+	return true;
 }
 
 /** Add or remove a pawn token on a node. Used by the node popover checkboxes. */

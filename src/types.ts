@@ -75,6 +75,25 @@ export interface CharOffset {
 	offsetY: number;
 }
 
+/**
+ * One corner of a zone outline, in the same design-canvas pixels as `x`/`y`.
+ *
+ * Zones are drawn by clicking the map, so the points are whatever the author
+ * happened to hit — never derived, never snapped to a grid.
+ */
+export interface ZonePoint {
+	x: number;
+	y: number;
+}
+
+/**
+ * What an element of the map is: a plain pin, or a zone you can fall into.
+ *
+ * Absent means "pin", so every data.json written before zones existed keeps
+ * loading and keeps behaving exactly as it did.
+ */
+export type NodeKind = "pin" | "zone";
+
 /** A single map location, stored in a chapter's `nodes[]` array. */
 export interface MapNode {
 	id: string;
@@ -88,6 +107,51 @@ export interface MapNode {
 	chars: string[];
 	/** Manual nudges, keyed by the same token as `chars`. Absent = all radial. */
 	charOffsets?: Record<string, CharOffset>;
+
+	/* ---- the nested-map fields: World -> Region -> Location ---- */
+
+	/**
+	 * What this element is. Absent = "pin", which is every node of an older file.
+	 *
+	 * A "zone" is a closed outline the author clicks out; a "pin" is a point. The
+	 * field exists so a zone is not inferred from "has a zone outline" — a
+	 * half-finished outline must not turn a location into a door.
+	 */
+	kind?: NodeKind;
+	/**
+	 * The closed outline of a zone, in canvas pixels.
+	 *
+	 * Absent, or fewer than three corners, and the element has no interior: it is
+	 * drawn but cannot be entered. Three corners is the smallest figure that
+	 * encloses anything at all, so anything less is a line the author has not
+	 * finished, not a shape.
+	 */
+	zone?: ZonePoint[];
+	/**
+	 * The map a click on this element switches to.
+	 *
+	 * The link runs the way the writer walks it: `P.targetMapId` names the element
+	 * *inside* P, so `childrenOf(P)` is that one node. This is also why a region
+	 * holding several towns is drawn as a region zone with a town zone inside it,
+	 * rather than one zone listing its towns — the shape a strategy game uses, and
+	 * the only one a single link per element can express.
+	 *
+	 * Kept as an id and not as an index so that adding, deleting or reordering
+	 * nodes cannot silently re-point it, and so a hand-edited file stays readable.
+	 * The store drops a link to a node that is not in this map, and a link that
+	 * would close a loop back onto an ancestor.
+	 */
+	targetMapId?: string;
+	/**
+	 * Where this element's cast is drawn on its parent's map.
+	 *
+	 * Placed by a click and never computed: there is no centroid here on purpose.
+	 * A region drawn as a jagged border has no meaningful middle, and a middle
+	 * the writer cannot see is a middle they cannot correct.
+	 */
+	anchor?: { x: number; y: number };
+	/** Colour of the zone's hover fill. Absent = the stylesheet's default. */
+	fill?: string;
 }
 
 /** Design canvas the stored coordinates refer to. */
