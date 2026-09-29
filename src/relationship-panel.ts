@@ -1,4 +1,4 @@
-import { ItemView, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { Notice, setIcon } from "obsidian";
 import type WriterStateMapPlugin from "../main";
 import { addLink, readMap, removeLink } from "./store";
 import type { ChapterLink, LinkKind, Pawn } from "./types";
@@ -6,8 +6,6 @@ import type { TranslationKey } from "./i18n";
 import { colorForToken, indexPawns, textColorClasses } from "./pawns";
 import { radialSlots } from "./layout";
 import type { Slot } from "./layout";
-
-export const VIEW_TYPE_RELATIONSHIP = "writer-state-map-relationship";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -45,11 +43,18 @@ interface Vertex {
 }
 
 /**
- * The relationships tab: who is tied to whom in the current chapter.
+ * Who is tied to whom in the current chapter.
+ *
+ * This used to be a view of its own, in a tab beside the map. It is a panel now,
+ * built inside whatever element the caller hands over — today the overlay the map
+ * opens from its toolbar — because a third tab for something that is only ever
+ * read next to the map was costing a tab slot and the writer's attention for
+ * nothing. Nothing in here ever touched `app` or `leaf`, so dropping the `ItemView`
+ * shell cost no behaviour: the same render, mounted somewhere else.
  *
  * Only characters actually placed on this chapter's map get a vertex. A tie
  * between two characters who are both off the map says something real about the
- * story, and hiding it would make the tab look emptier than the data is — so
+ * story, and hiding it would make the panel look emptier than the data is — so
  * those ties are listed underneath instead, marked as not drawn. The graph is
  * for reading the shape of the cast at a glance; the list is the honest
  * inventory.
@@ -59,8 +64,8 @@ interface Vertex {
  * same fact, which is how the writer records it. The kind carries the direction
  * of obligation; the pair does not.
  */
-export class RelationshipView extends ItemView {
-	private root!: HTMLElement;
+export class RelationshipPanel {
+	private root: HTMLElement;
 	private graphEl!: HTMLElement;
 	private listEl!: HTMLElement;
 	private hintEl!: HTMLElement;
@@ -71,30 +76,19 @@ export class RelationshipView extends ItemView {
 
 	// Explicit field instead of a TS parameter property: the test suite runs
 	// these files through Node's strip-only TypeScript, which rejects them.
-	constructor(leaf: WorkspaceLeaf, plugin: WriterStateMapPlugin) {
-		super(leaf);
+	constructor(root: HTMLElement, plugin: WriterStateMapPlugin) {
 		this.plugin = plugin;
+		this.root = root;
+		this.mount();
 	}
 
-	getViewType(): string {
-		return VIEW_TYPE_RELATIONSHIP;
-	}
-
-	getDisplayText(): string {
-		return this.plugin.t("viewRelationship");
-	}
-
-	getIcon(): string {
-		return "git-fork";
-	}
-
-	async onOpen(): Promise<void> {
+	/** Build the skeleton. Separate from the constructor body only for reading. */
+	private mount(): void {
 		// A pending first pick belongs to a DOM that is about to be thrown away.
 		// Carrying it over would make the next click land on a tie the writer
 		// never finished choosing.
 		this.pending = null;
 
-		this.root = this.contentEl;
 		this.root.empty();
 		this.root.addClass("wsm-rel");
 
@@ -108,7 +102,14 @@ export class RelationshipView extends ItemView {
 		this.render();
 	}
 
-	async onClose(): Promise<void> {
+	/**
+	 * Give the pending pair back before the element is removed.
+	 *
+	 * Not just tidiness: the map's overlay reopens on the same object if the
+	 * writer closes it by mistake, and a half-finished pair from a panel that no
+	 * longer exists would turn the next click into a tie nobody asked for.
+	 */
+	dispose(): void {
 		this.pending = null;
 	}
 
@@ -173,7 +174,7 @@ export class RelationshipView extends ItemView {
 
 		// Vertices first, in ring order, so a later tie can never be hidden
 		// behind an avatar. The very same ring the map draws around a pin, so the
-		// cast reads the same way in both tabs.
+		// cast reads the same way in both places.
 		const slots = new Map<string, Slot>();
 		radialSlots(vertices.length).forEach((slot, indexInRing) => {
 			slots.set(vertices[indexInRing].token, slot);
@@ -191,7 +192,7 @@ export class RelationshipView extends ItemView {
 			line.setAttribute("x2", String(to.x));
 			line.setAttribute("y2", String(to.y));
 			// Without this the thread would thicken as the graph scaled up to fill
-			// the panel and fade away as the sidebar narrowed, which is the same
+			// the panel and fade away as the overlay narrowed, which is the same
 			// reason the map's own spokes pin their stroke.
 			line.setAttribute("vector-effect", "non-scaling-stroke");
 			// The kind is the only thing the line has to say, so it is carried by

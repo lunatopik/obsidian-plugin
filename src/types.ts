@@ -128,20 +128,25 @@ export interface MapNode {
 	 */
 	zone?: ZonePoint[];
 	/**
-	 * The map a click on this element switches to.
+	 * The element this one sits inside — the level above, not below.
 	 *
-	 * The link runs the way the writer walks it: `P.targetMapId` names the element
-	 * *inside* P, so `childrenOf(P)` is that one node. This is also why a region
-	 * holding several towns is drawn as a region zone with a town zone inside it,
-	 * rather than one zone listing its towns — the shape a strategy game uses, and
-	 * the only one a single link per element can express.
+	 * The link deliberately runs *upwards*, from the child to its parent, and that
+	 * is the whole reason a level can hold more than one thing. The other way
+	 * round — a parent naming what is inside it — is expressible, but it can only
+	 * ever name one child per element, and a region holding several towns is the
+	 * normal case rather than the exception. Pointing each town back at its region
+	 * makes `childrenOf(region)` a plain filter and costs nothing to walk.
 	 *
 	 * Kept as an id and not as an index so that adding, deleting or reordering
 	 * nodes cannot silently re-point it, and so a hand-edited file stays readable.
 	 * The store drops a link to a node that is not in this map, and a link that
-	 * would close a loop back onto an ancestor.
+	 * would close a loop back onto this element's own ancestor.
+	 *
+	 * A file written before the direction was inverted stored the same edge as
+	 * `targetMapId` on the parent; the store converts it on load, so no work is
+	 * lost and no zone is left silently un-enterable.
 	 */
-	targetMapId?: string;
+	parentId?: string;
 	/**
 	 * Where this element's cast is drawn on its parent's map.
 	 *
@@ -235,8 +240,16 @@ export interface WriterStateMapSettings {
 	/** Layout version of this file. */
 	schemaVersion: number;
 	language: Language;
-	/** Which tab to focus when the right sidebar is (re)opened. */
-	defaultView: "map" | "note" | "roster" | "relationship";
+	/**
+	 * Which of the plugin's two registered tabs to focus.
+	 *
+	 * Only the map and the roster are tabs any more. The chapter note is an
+	 * ordinary markdown file in the main area and the relationship graph is an
+	 * overlay on the map, so neither can be "the tab" — an older data.json naming
+	 * one of them falls back to the map rather than opening something that no
+	 * longer exists.
+	 */
+	defaultView: "map" | "roster";
 	/** Canvas size used when a map has no `map_size` and no background image. */
 	defaultCanvas: Canvas;
 	/** Vault path for the portable export/import file. */

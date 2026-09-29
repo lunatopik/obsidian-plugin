@@ -59,6 +59,23 @@ export class NoteWriter {
 	 * Comparing content cannot be fooled that way.
 	 */
 	private readonly selfWrites = new Map<string, string>();
+	/**
+	 * Every text this module has put on disk, newest last, per path.
+	 *
+	 * `selfWrites` answers "is the file still exactly what I wrote?", which is
+	 * what tells our own echo apart from the author's save. It cannot answer the
+	 * question that actually strands a write: *is the editor holding something the
+	 * author typed, or something stale that we left there?* An editor opened
+	 * before the file existed holds "", and "" is not a deferral-worthy edit — it
+	 * is a buffer nobody has touched. This remembers what we have written so a
+	 * buffer matching any of it can be recognised as ours and stepped over.
+	 *
+	 * A short list, not an unbounded log: two entries is enough to cover the
+	 * window between a write and the editor picking it up.
+	 */
+	private readonly written = new Map<string, string[]>();
+	/** Cap on remembered texts per path, so a long session cannot grow without end. */
+	private static readonly WRITTEN_HISTORY = 3;
 
 	// Explicit field instead of a TS parameter property: the test suite loads
 	// this module through Node's strip-only TypeScript, which rejects them.
@@ -144,7 +161,11 @@ export class NoteWriter {
 				const s = this.strings();
 				const empty = buildNoteBlock({ map_bg: null, nodes: [] }, [], s);
 				await this.ensureFolder(noteFolderFor(chapterPath));
-				await this.adapter().write(target, newNote(empty, s));
+				const created = newNote(empty, s);
+				await this.adapter().write(target, created);
+				// Remembered, because an editor may already be holding a buffer for
+				// this path from before the file existed.
+				this.rememberWritten(target, created);
 				return true;
 			} catch (error) {
 				new Notice(this.plugin.t("noticeNoteFailed", { path: target, message: String(error) }));
@@ -183,8 +204,27 @@ export class NoteWriter {
 			// The note is usually open in the sidebar editor. Writing over a buffer
 			// the author has not saved yet would throw their text away, so the
 			// write waits for the save instead of racing it.
+			//
+			// "Has not saved yet" is not the same question as "differs from disk",
+			// and treating them as one is what wedged the digest: an editor holding
+			// a stale buffer — empty, or text from before our last write — differs
+			// from disk forever, and since a stale buffer never produces a save
+			// event, the deferred write was never released. The file on disk ended
+			// up correct and the author was looking at nothing.
+			//
+			// So the buffer is only treated as the author's when it is neither what
+			// is on disk nor anything we have written there. Anything of ours is
+			// stale by definition, and writing over it loses nothing.
+			//
+			// An empty buffer is nobody's draft either. A leaf opened before the
+			// note existed holds "", and there is nothing to compare it against in
+			// `written` — the first write of a session is the one case the memory
+			// cannot vouch for, so the emptiness itself has to carry the weight.
+			// It is also safe: there is no author text in an empty buffer to lose,
+			// only ours to restore.
 			const buffer = this.plugin.noteBuffer(target);
-			if (buffer !== null && buffer !== existing) {
+			const unsaved = buffer !== null && buffer.trim() !== "" && buffer !== existing;
+			if (unsaved && !this.isOurs(target, buffer)) {
 				this.pending.add(chapterPath);
 				return false;
 			}
@@ -202,6 +242,7 @@ export class NoteWriter {
 			}
 
 			this.selfWrites.set(target, merged.text);
+			this.rememberWritten(target, merged.text);
 			await this.adapter().write(target, merged.text);
 			this.signatures.set(chapterPath, signature);
 			return true;
@@ -209,9 +250,22 @@ export class NoteWriter {
 			// A failed write must not leave a self-write marker behind: it would
 			// make the next real save of this note look like our own echo.
 			this.selfWrites.delete(target);
+			this.written.delete(target);
 			new Notice(this.plugin.t("noticeNoteFailed", { path: target, message: String(error) }));
 			return false;
 		}
+	}
+
+	/** True when this text is one we wrote, so the editor is showing a stale copy. */
+	private isOurs(path: string, text: string): boolean {
+		return this.written.get(path)?.includes(text) === true;
+	}
+
+	/** Note a text as ours, keeping only the last few for this path. */
+	private rememberWritten(path: string, text: string): void {
+		const history = this.written.get(path) ?? [];
+		history.push(text);
+		this.written.set(path, history.slice(-NoteWriter.WRITTEN_HISTORY));
 	}
 
 	/** What is on disk for one of our paths, or null when there is no file. */
@@ -280,17 +334,20 @@ export class NoteWriter {
 		this.timers.clear();
 		this.pending.clear();
 		this.selfWrites.clear();
+		this.written.clear();
 	}
 
 	/**
 	 * Forget what we believe is on disk.
 	 *
 	 * Called after a manual reload or an import: the file may now differ from
-	 * anything this session wrote.
+	 * anything this session wrote. The remembered texts go with it — they are
+	 * claims about what *we* put there, and after an import the answer is unknown.
 	 */
 	invalidate(): void {
 		this.signatures.clear();
 		this.selfWrites.clear();
+		this.written.clear();
 	}
 
 	/* ------------------------------------------------------------------ */

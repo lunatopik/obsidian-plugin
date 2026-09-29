@@ -1,4 +1,4 @@
-щзутсщву/* =====================================================================
+/* =====================================================================
    Writer's State Map
    Two sibling tabs in the right sidebar: the map and the roster.
    ===================================================================== */
@@ -48,11 +48,69 @@
 	display: none;
 }
 
+/* ---------------------------------------------------------------------
+   Map: the trail
+   World → region → town. A flex row that may wrap: on a narrow sidebar a
+   three-deep trail plus a long file name cannot share one line, and a trail
+   that scrolls sideways is a trail nobody can read.
+   --------------------------------------------------------------------- */
+
+.wsm-map__crumbs {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 2px;
+	font-size: var(--font-ui-smaller);
+	min-width: 0;
+	flex: 0 1 auto;
+}
+
+/* The file name and the trail are the same fact at two granularities, so they
+   share the row and the trail takes what is left. */
+.wsm-map__file {
+	flex: 0 1 auto;
+}
+
+.wsm-map__crumb {
+	padding: 1px 4px;
+	border-radius: var(--radius-s);
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	font-size: inherit;
+	cursor: pointer;
+	max-width: 120px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.wsm-map__crumb:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* The level being shown. Not a button, because pressing it would have to do
+   nothing, and a control that does nothing when pressed reads as broken. */
+.wsm-map__crumb.is-current {
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
+	cursor: default;
+	padding-right: 2px;
+}
+
+.wsm-map__crumb-sep {
+	color: var(--text-faint);
+}
+
 /* Toolbar actions (background picker). */
 .wsm-map__tools {
 	display: flex;
 	align-items: center;
 	gap: var(--size-4-1);
+	/* The command centre row carries seven icons now. A narrow sidebar wraps
+	   them rather than clipping the last two off the edge. */
+	flex-wrap: wrap;
 	flex-shrink: 0;
 }
 
@@ -70,6 +128,51 @@
 .wsm-map__tool:hover {
 	background-color: var(--background-modifier-hover);
 	color: var(--text-normal);
+}
+
+/* The one button that destroys work. It wears the danger colour on hover only,
+   so the row does not look like it is about to delete something all the time,
+   and never on rest: an always-red button trains the eye to ignore it. */
+.wsm-map__tool--danger:hover:not(:disabled) {
+	color: var(--text-error);
+	background-color: var(--background-modifier-error-hover);
+}
+
+/* The active drawing tool. The border rather than a background wash, because
+   the icons sit on the map and a filled button would hide the canvas under it. */
+.wsm-map__tool.is-active {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
+}
+
+/* "Back" floats over the map, not in the toolbar: four levels down and scrolled
+   away, a toolbar button is exactly where the writer cannot reach. `sticky`
+   rather than `absolute` so it stays put while the map scrolls under it. */
+.wsm-map__back {
+	position: sticky;
+	top: var(--size-4-2);
+	z-index: 30;
+	margin: var(--size-4-2) 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	padding: var(--size-2-1) var(--size-4-2);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary);
+	box-shadow: var(--shadow-s), 0 0 0 1px var(--background-modifier-border);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+.wsm-map__back:hover {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
+}
+
+.wsm-map__back.is-hidden {
+	display: none;
 }
 
 /* ---------------------------------------------------------------------
@@ -128,6 +231,125 @@
 .wsm-map__nodes {
 	position: absolute;
 	inset: 0;
+}
+
+/* ---------------------------------------------------------------------
+   Map: zones
+   One SVG for the level, in canvas coordinates, so an outline is the shape
+   the writer clicked out at any canvas size. It is NOT counter-scaled: a
+   border that shrank with the map would stop tracing its own border.
+   --------------------------------------------------------------------- */
+
+.wsm-zones {
+	position: absolute;
+	inset: 0;
+	/* The layer itself is not clickable, only the polygons inside it, so a click
+	   on empty canvas reaches the stage and not the topmost element on screen. */
+	pointer-events: none;
+	z-index: 1;
+}
+
+.wsm-zone {
+	pointer-events: auto;
+	cursor: pointer;
+	/* Transparent rather than `fill: none`: with `none` there is no inside to
+	   fill on hover, and a zone that only reacts on its one-pixel border cannot
+	   be used as a place. */
+	fill: var(--wsm-zone-fill, transparent);
+	fill-opacity: 0;
+	fill-rule: evenodd;
+	stroke: var(--text-muted);
+	stroke-width: 1.5;
+	stroke-linejoin: round;
+	transition: fill-opacity 120ms ease-in-out;
+}
+
+/* Hover is the only fill a stored zone ever gets on its own. A permanently
+   tinted region would colour the map for everyone who opens the chapter, and
+   the writer asked for an outline with a hover, not a map that shouts. */
+.wsm-zone.is-hover {
+	fill-opacity: 0.25;
+	stroke: var(--text-normal);
+}
+
+/* The outline being drawn. Filled faintly rather than not at all, so the shape
+   about to be committed is visible as an area and not just a wire. */
+.wsm-zone.wsm-draft {
+	pointer-events: none;
+	fill-opacity: 0.12;
+	stroke: var(--interactive-accent);
+	stroke-dasharray: 4 3;
+}
+
+.wsm-draft__corner {
+	pointer-events: none;
+	fill: var(--interactive-accent);
+	stroke: var(--background-primary);
+	stroke-width: 1.5;
+}
+
+/* A zone's name, on the corner the outline started from. */
+.wsm-zone-label {
+	position: absolute;
+	transform: translate(-50%, -50%) scale(var(--wsm-inv, 1));
+	transform-origin: center;
+	max-width: 150px;
+	padding: 1px 6px;
+	border-radius: var(--radius-s);
+	background-color: var(--background-modifier-message);
+	color: var(--text-on-accent);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	box-shadow: var(--shadow-s);
+	cursor: pointer;
+	z-index: 2;
+}
+
+/* ---------------------------------------------------------------------
+   Map: a zone's sun
+   The cast of a whole region in one ring, around the anchor the writer put
+   down. Like a pin it is a 0x0 box in canvas coordinates, so the children
+   place themselves by offset alone.
+   --------------------------------------------------------------------- */
+
+.wsm-sun {
+	position: absolute;
+	width: 0;
+	height: 0;
+	pointer-events: none;
+	z-index: 3;
+}
+
+/* The "+N" that stands for the characters the ring had no room for. A door,
+   not a label: it opens the level where the rest of them actually are. */
+.wsm-sun__more {
+	position: absolute;
+	left: 0;
+	top: 0;
+	transform: translate(-50%, calc(-50% + 46px)) scale(var(--wsm-inv, 1));
+	transform-origin: center;
+	min-width: 22px;
+	height: 22px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0 4px;
+	border-radius: 999px;
+	background-color: var(--background-primary);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	box-shadow: var(--shadow-s), 0 0 0 1px var(--background-modifier-border);
+	cursor: pointer;
+	pointer-events: auto;
+}
+
+.wsm-sun__more:hover {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
 }
 
 /* ---------------------------------------------------------------------
@@ -424,6 +646,27 @@
 	font-size: var(--font-ui-small);
 }
 
+/* A zone's children, with how many characters each holds. The count is the
+   only thing that differs from a roster row, and it is the reason to look:
+   "which town is the cast in" is the question a region is asked. */
+.wsm-pop__count {
+	flex: 0 0 auto;
+	min-width: 18px;
+	padding: 0 5px;
+	border-radius: 999px;
+	background-color: var(--background-modifier-border);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	text-align: center;
+}
+
+/* A text field, not a colour input: `asColor` accepts a hex, an rgb(), or a
+   name, and a swatch picker would offer only one of those three dialects. */
+.wsm-pop__color {
+	width: 100%;
+	font-size: var(--font-ui-small);
+}
+
 .wsm-pop__list,
 .wsm-pop__section {
 	display: flex;
@@ -640,7 +883,109 @@
 }
 
 /* ---------------------------------------------------------------------
-   Relationships tab
+   Relationship overlay
+   --------------------------------------------------------------------- */
+
+/* A scrim over the map itself, not a tab and not a side pane. The graph is
+   something the writer dips into and comes back out of, so the map stays
+   exactly where it was underneath and the panel floats on a scrim. */
+.wsm-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: var(--layer-modal, 100);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--size-4-4);
+	/* The map is still live underneath, so the scrim has to actually stop it.
+	   A semi-transparent wash alone would let clicks through to the stage. */
+	background-color: rgba(0, 0, 0, 0.45);
+}
+
+.wsm-overlay__card {
+	display: flex;
+	flex-direction: column;
+	/* Capped on both axes: a force graph in a narrow sidebar must scroll rather
+	   than grow a canvas taller than the window it floats in. */
+	width: 100%;
+	max-width: 640px;
+	max-height: 100%;
+	overflow: hidden;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-l);
+	background-color: var(--background-primary);
+	box-shadow: var(--shadow-s);
+}
+
+/* The card's own head row: title on the left, close on the right. The panel
+   below brings its own smaller title, so this one is the overlay's, and the two
+   read as two levels of chrome rather than a duplicate. */
+.wsm-overlay__head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-2) var(--size-4-2) var(--size-4-4);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.wsm-overlay__title {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.wsm-overlay__close {
+	padding: var(--size-4-1) var(--size-4-2);
+	border: none;
+	border-radius: var(--radius-s);
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.wsm-overlay__close:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* The scroll container. The panel is height: 100% of this, so the card needs
+   the child to be the flexible part or the force canvas collapses to nothing. */
+.wsm-overlay__body {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	overflow: auto;
+}
+
+.wsm-overlay__body > .wsm-rel {
+	height: auto;
+	min-height: 0;
+}
+
+/* The card's head already said "Relationships"; the panel repeating it in 14px
+   type reads as a mistake, so inside the overlay only its hint line survives —
+   that hint is the one part carrying live state ("pick two to link them"). */
+.wsm-overlay__body > .wsm-rel .wsm-rel__title {
+	display: none;
+}
+
+.wsm-overlay__body > .wsm-rel .wsm-rel__head {
+	padding-top: var(--size-4-3);
+}
+
+/* A definite height, because the card's height here comes from its content and
+   a percentage-height canvas inside an auto-height box resolves to nothing. */
+.wsm-overlay__body > .wsm-rel .wsm-rel__graph {
+	flex: none;
+	height: 320px;
+	min-height: 200px;
+}
+
+/* ---------------------------------------------------------------------
+   Relationship panel
    --------------------------------------------------------------------- */
 
 .wsm-rel {

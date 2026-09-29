@@ -26,10 +26,11 @@ import {
 	setBackground,
 	setCanvasSize,
 	setNodeAnchor,
+	setNodeParent,
 	setParentChapter,
 	setPawnOnNode,
+	setZoneFill,
 	setZoneOutline,
-	setZoneTarget,
 	addZone,
 	addLink,
 	linkBetween,
@@ -54,11 +55,10 @@ import { DEFAULT_SETTINGS, SCHEMA_VERSION } from "../src/types.ts";
 import type { ChapterMaps, Pawn, StoredChapterMap, WriterStateMapSettings } from "../src/types.ts";
 import { composePawn, PLACEHOLDER_INITIALS } from "../src/pawns.ts";
 import { App, noticeLog, openedSuggestModals, TFile, WorkspaceLeaf } from "./obsidian-stub.ts";
-import { installDom } from "./dom-stub.ts";
-import type { FakeElement } from "./dom-stub.ts";
+import { installDom, FakeElement, pressKey } from "./dom-stub.ts";
 import { MapView } from "../src/map-view.ts";
 import { RosterView } from "../src/roster-view.ts";
-import { RelationshipView } from "../src/relationship-view.ts";
+import { RelationshipPanel } from "../src/relationship-panel.ts";
 import { pickFromList, pickNote } from "../src/pickers.ts";
 import {
 	buildNoteBlock,
@@ -507,47 +507,71 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 					{ x: 100, y: 0 },
 					{ x: 100, y: 80 },
 				],
-				targetMapId: "harbour",
 				anchor: { x: 40, y: 30 },
 				fill: "#3355ff",
 			},
-			{ id: "harbour", x: 10, y: 20, chars: ["tom"], targetMapId: "west" },
+			{ id: "harbour", x: 10, y: 20, chars: ["tom"], parentId: "west" },
 		],
 	});
 
 	const [west, harbour] = map.nodes;
 	assert.equal(west.kind, "zone", "a zone is a zone because the file says so");
 	assert.equal(west.zone?.length, 3, "its three corners are kept");
-	assert.equal(west.targetMapId, "harbour", "and the map a click on it falls into");
+	assert.equal(harbour.parentId, "west", "and the child names what it is inside");
+	assert.equal(west.parentId, undefined, "while the parent says nothing about it");
 	assert.deepEqual(west.anchor, { x: 40, y: 30 }, "the author's own anchor survives");
 	assert.equal(west.fill, "#3355ff", "as does the custom hover colour");
+}
 
-	// `harbour` pointed back at `west`: a two-node loop. Cutting the edge that
-	// closes it is enough, and the rest of the structure stays as the writer left
-	// it — the surviving link still means "clicking west takes you to harbour".
-	assert.equal("targetMapId" in (harbour as object), false, "the edge that closed the loop is the one cut");
-	assert.equal(west.targetMapId, "harbour", "while the surviving link is untouched");
+{
+	// A file written before the direction was inverted: the edge is on the parent
+	// and has to be adopted by the child, or every zone comes back as a door onto
+	// an empty level.
+	const legacy = normalizeMap({
+		nodes: [
+			{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }], targetMapId: "harbour" },
+			{ id: "harbour", x: 10, y: 20, chars: ["tom"] },
+		],
+	});
+
+	const byLegacy = new Map(legacy.nodes.map((node) => [node.id, node]));
+	assert.equal(byLegacy.get("harbour")?.parentId, "west", "the old edge is moved onto the child");
+	assert.equal("targetMapId" in (byLegacy.get("west") as object), false, "and taken off the parent it was on");
+	assert.deepEqual(collectCast(legacy.nodes, "west"), ["tom"], "so the zone is enterable again, with its cast");
+
+	// Two parents used to name the same child. `parentId` is one value, so only the
+	// first claim survives, and map order is the tie-break a reader can predict.
+	const contested = normalizeMap({
+		nodes: [
+			{ id: "east", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }], targetMapId: "mill" },
+			{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }], targetMapId: "mill" },
+			{ id: "mill", x: 10, y: 20, chars: [] },
+		],
+	});
+	const byContested = new Map(contested.nodes.map((node) => [node.id, node]));
+	assert.equal(byContested.get("mill")?.parentId, "east", "the first claim on a child is the one kept");
 }
 
 {
 	// Every way the new fields can be wrong, and what has to survive anyway.
 	const map = normalizeMap({
 		nodes: [
-			// A self-reference: a map that switches to itself can never be walked
-			// into, and would be a one-node loop to every traversal.
-			{ id: "loop", x: 0, y: 0, chars: [], kind: "zone", targetMapId: "loop", zone: [] },
-			// A link to something that is not in this map at all.
-			{ id: "gone", x: 0, y: 0, chars: [], kind: "zone", targetMapId: "nowhere" },
+			// A self-reference: an element that is inside itself can never be
+			// walked into, and would be a one-node loop to every traversal.
+			{ id: "loop", x: 0, y: 0, chars: [], kind: "zone", parentId: "loop", zone: [] },
+			// A parent that is not in this map at all.
+			{ id: "gone", x: 0, y: 0, chars: [], kind: "zone", parentId: "nowhere" },
 			// Two corners is a line, not an interior.
 			{ id: "line", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 9 }] },
 			// Rubbish everywhere, including the two numbers a polygon needs.
-			{ id: "junk", x: 0, y: 0, chars: [], zone: "not an array", anchor: { x: 5 }, fill: 42 },
+			{ id: "junk", x: 0, y: 0, chars: [], zone: "not an array", anchor: { x: 5 }, fill: 42, parentId: 7 },
 		],
 	});
 
 	const byId = new Map(map.nodes.map((node) => [node.id, node]));
-	assert.equal("targetMapId" in (byId.get("loop") as object), false, "a map that switches to itself loses the link");
-	assert.equal("targetMapId" in (byId.get("gone") as object), false, "a link to a node that is not there is dropped");
+	assert.equal("parentId" in (byId.get("loop") as object), false, "an element inside itself loses the link");
+	assert.equal("parentId" in (byId.get("gone") as object), false, "a parent that is not there is dropped");
+	assert.equal("parentId" in (byId.get("junk") as object), false, "a parent that is not an id is dropped");
 	assert.equal("zone" in (byId.get("line") as object), false, "an unfinished outline is not an interior");
 	assert.equal("zone" in (byId.get("junk") as object), false, "a zone that is not an array is dropped");
 	assert.equal("anchor" in (byId.get("junk") as object), false, "half an anchor is no anchor");
@@ -805,10 +829,10 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 					],
 					anchor: { x: 40, y: 30 },
 					fill: "#3355ff",
-					targetMapId: "harbour",
 				},
-				{ id: "harbour", x: 30, y: 40, chars: ["tom"], targetMapId: "inn" },
-				{ id: "inn", x: 50, y: 60, chars: ["aya"] },
+				{ id: "harbour", x: 30, y: 40, chars: ["tom"], parentId: "west" },
+				{ id: "inn", x: 50, y: 60, chars: ["aya"], parentId: "harbour" },
+				{ id: "mill", x: 70, y: 80, chars: ["aya"], parentId: "west" },
 			],
 		},
 		"Глава 2.md": { map_bg: null, nodes: [] },
@@ -821,10 +845,11 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 	assert.deepEqual(levelNodes(copy.nodes, []).map((node) => node.id), ["west"], "and the new chapter opens on the same world");
 	assert.deepEqual(
 		levelNodes(copy.nodes, ["west"]).map((node) => node.id),
-		["harbour"],
-		"with the same region inside it",
+		["harbour", "mill"],
+		"with both of the region's towns side by side, which one link per parent could never hold",
 	);
-	assert.deepEqual(levelNodes(copy.nodes, ["west", "harbour"]).map((node) => node.id), ["inn"], "and the same town inside that");
+	assert.deepEqual(levelNodes(copy.nodes, ["west", "harbour"]).map((node) => node.id), ["inn"], "and the same inn inside that");
+	assert.deepEqual(levelNodes(copy.nodes, ["west", "mill"]), [], "while the mill, which holds nothing, is the honest floor");
 	assert.deepEqual(collectCast(copy.nodes, "west"), ["tom", "aya"], "and the same cast around its anchor");
 
 	// Independence, corner by corner: a chapter that rearranges its regions must
@@ -1042,30 +1067,38 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 }
 
 {
-	// The forest: World -> Region -> Location, as one flat array.
+	// The forest: World -> Region -> Location, as one flat array, with the edges
+	// running upwards. `west` holding two towns is the case the old direction could
+	// not express at all, and the reason the direction was inverted.
 	const nodes: MapNode[] = [
-		{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "harbour" },
-		{ id: "harbour", x: 0, y: 0, chars: ["tom"], targetMapId: "inn" },
-		{ id: "inn", x: 0, y: 0, chars: ["aya"] },
-		{ id: "east", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }], targetMapId: "mill" },
-		{ id: "mill", x: 0, y: 0, chars: ["kim"] },
+		{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }] },
+		{ id: "harbour", x: 0, y: 0, chars: ["tom"], parentId: "west" },
+		{ id: "inn", x: 0, y: 0, chars: ["aya"], parentId: "harbour" },
+		{ id: "mill", x: 0, y: 0, chars: ["kim"], parentId: "west" },
+		{ id: "east", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }] },
+		{ id: "mine", x: 0, y: 0, chars: ["bob"], parentId: "east" },
 	];
 
-	assert.deepEqual(rootNodes(nodes).map((node) => node.id), ["west", "east"], "only the nodes nothing switches to are on top");
-	assert.deepEqual(childrenOf(nodes, "west").map((node) => node.id), ["harbour"], "a region's children are where its own link leads");
+	assert.deepEqual(rootNodes(nodes).map((node) => node.id), ["west", "east"], "only the nodes inside nothing are on top");
+	assert.deepEqual(
+		childrenOf(nodes, "west").map((node) => node.id),
+		["harbour", "mill"],
+		"a region holds every element that names it, not just one",
+	);
+	assert.deepEqual(childrenOf(nodes, "harbour").map((node) => node.id), ["inn"], "and a town holds its own");
 	assert.deepEqual(
 		descendantsOf(nodes, "west").map((node) => node.id),
-		["harbour", "inn"],
-		"the whole chain below it, nearest first",
+		["harbour", "mill", "inn"],
+		"the whole subtree below it, breadth first",
 	);
 	assert.deepEqual(descendantsOf(nodes, "inn"), [], "a location has nothing below it");
-	// A leaf is not a root. `inn` is the floor of a chain, and being the last link
-	// says nothing about where it is shown.
+	// A leaf is not a root. `inn` is at the bottom of the tree, and how deep it
+	// sits says nothing about where it is shown.
 	assert.equal(rootNodes(nodes).includes(nodes[2] as MapNode), false, "a leaf inside a region stays inside it");
 
 	// The level the view is showing. An empty stack is the top of the chapter.
 	assert.deepEqual(levelNodes(nodes, []).map((node) => node.id), ["west", "east"], "no trail means the world");
-	assert.deepEqual(levelNodes(nodes, ["west"]).map((node) => node.id), ["harbour"], "one step down");
+	assert.deepEqual(levelNodes(nodes, ["west"]).map((node) => node.id), ["harbour", "mill"], "one step down");
 	assert.deepEqual(levelNodes(nodes, ["west", "harbour"]).map((node) => node.id), ["inn"], "two steps down");
 	assert.deepEqual(levelNodes(nodes, ["west", "harbour", "inn"]), [], "and the floor is an honest empty level, not the level above");
 
@@ -1073,7 +1106,7 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 	// instead of to nothing.
 	assert.deepEqual(
 		levelNodes(nodes, ["west", "gone"]).map((node) => node.id),
-		["harbour"],
+		["harbour", "mill"],
 		"a level whose node is gone falls back to the level above it",
 	);
 	assert.deepEqual(levelNodes(nodes, ["gone"]).map((node) => node.id), ["west", "east"], "and to the world when there is no level above");
@@ -1084,11 +1117,11 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 	assert.equal(isZone({ ...nodes[0], zone: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }), false, "an unfinished outline is not a zone");
 
 	// A hand-edited loop is not a level anybody can stand on: every node in it is
-	// something else switches to, so the world would be empty and the writer
-	// would have no way back out.
+	// inside another, so the world would be empty and the writer would have no way
+	// back out.
 	const loop: MapNode[] = [
-		{ id: "a", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "b" },
-		{ id: "b", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "a" },
+		{ id: "a", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], parentId: "b" },
+		{ id: "b", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], parentId: "a" },
 	];
 	assert.deepEqual(collectCast(loop, "a").length, 0, "a loop is walked once, not forever");
 	assert.deepEqual(levelNodes(loop, ["a"]).map((node) => node.id), ["b"], "and stops at the repeat");
@@ -1097,11 +1130,12 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 {
 	// The sun: everyone under a zone, however deep, gathered in one ring.
 	const nodes: MapNode[] = [
-		{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "harbour" },
-		{ id: "harbour", x: 0, y: 0, chars: ["tom", "aya"], targetMapId: "inn" },
-		{ id: "inn", x: 0, y: 0, chars: ["tom", "kim"] },
-		{ id: "east", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }], targetMapId: "mill" },
-		{ id: "mill", x: 0, y: 0, chars: ["bob"] },
+		{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }] },
+		{ id: "harbour", x: 0, y: 0, chars: ["tom", "aya"], parentId: "west" },
+		{ id: "inn", x: 0, y: 0, chars: ["tom", "kim"], parentId: "harbour" },
+		{ id: "mill", x: 0, y: 0, chars: [], parentId: "west" },
+		{ id: "east", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }] },
+		{ id: "mine", x: 0, y: 0, chars: ["bob"], parentId: "east" },
 	];
 
 	assert.deepEqual(
@@ -1109,8 +1143,8 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 		["tom", "aya", "kim"],
 		"the region's own characters and its towns', each one once",
 	);
-	assert.deepEqual(collectCast(nodes, "harbour"), ["tom", "kim"], "a town gathers only its own");
-	assert.deepEqual(collectCast(nodes, "mill"), [], "a location gathers nobody");
+	assert.deepEqual(collectCast(nodes, "harbour"), ["tom", "aya", "kim"], "a town gathers its own and what is under it");
+	assert.deepEqual(collectCast(nodes, "inn"), ["tom", "kim"], "a location gathers only its own");
 	assert.deepEqual(collectCast(nodes, "east"), ["bob"], "another region is a different sun");
 
 	// A character in two towns of the same region is one token. Drawing them
@@ -1121,8 +1155,8 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 	// The cap. What does not fit is counted, not dropped and not squeezed in.
 	const many = Array.from({ length: SUN_CAP + 5 }, (_, i) => `p${i}`);
 	const cast: MapNode[] = [
-		{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }], targetMapId: "crowded" },
-		{ id: "crowded", x: 0, y: 0, chars: many },
+		{ id: "west", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }] },
+		{ id: "crowded", x: 0, y: 0, chars: many, parentId: "west" },
 	];
 	assert.equal(sunLayout(collectCast(cast, "west")).shown.length, SUN_CAP, "the ring draws as many as it can hold");
 	assert.equal(sunLayout(collectCast(cast, "west")).overflow, "+5", "and the rest is a count the writer can click");
@@ -1181,9 +1215,18 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 
 	// Into the zone.
 	const cityId = addNode(store, CHAPTER, "harbour", 20, 30);
-	assert.equal(setZoneTarget(store, CHAPTER, zoneId, cityId), true, "a zone can be pointed at what is inside it");
-	assert.equal(isEnterable(store[CHAPTER].nodes, zone), true, "and becomes a door");
+	assert.equal(setNodeParent(store, CHAPTER, cityId, zoneId), true, "an element can be put inside a zone");
+	assert.equal(isEnterable(store[CHAPTER].nodes, zone), true, "and the zone becomes a door");
 	assert.deepEqual(levelNodes(store[CHAPTER].nodes, [zoneId]).map((node) => node.id), [cityId], "which is what entering it shows");
+
+	// A second town, which is the whole reason the edges point upwards.
+	const millId = addNode(store, CHAPTER, "mill", 60, 70);
+	assert.equal(setNodeParent(store, CHAPTER, millId, zoneId), true, "and a second one goes in beside it");
+	assert.deepEqual(
+		levelNodes(store[CHAPTER].nodes, [zoneId]).map((node) => node.id),
+		[cityId, millId],
+		"so the region holds both at once, in the order they were placed",
+	);
 
 	// The anchor, and only the anchor: a point, placed by the author.
 	assert.equal(setNodeAnchor(store, CHAPTER, zoneId, 40, 30), true, "the anchor is placed");
@@ -1191,20 +1234,37 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 	assert.deepEqual(collectCast(store[CHAPTER].nodes, zoneId), [], "a zone with nobody in it gathers nobody");
 
 	// The links that cannot be walked.
-	assert.equal(setZoneTarget(store, CHAPTER, zoneId, zoneId), false, "a zone cannot lead to itself");
-	assert.equal(setZoneTarget(store, CHAPTER, zoneId, "nowhere"), false, "nor from something that is not on the map");
-	assert.equal(setZoneTarget(store, CHAPTER, zoneId, cityId), false, "pointing at the same place again reports no change");
-	assert.equal(store[CHAPTER].nodes[0].targetMapId, cityId, "and the refused ones left it as it was");
+	assert.equal(setNodeParent(store, CHAPTER, cityId, cityId), false, "nothing can be inside itself");
+	assert.equal(setNodeParent(store, CHAPTER, cityId, "nowhere"), false, "nor inside something that is not on the map");
+	assert.equal(setNodeParent(store, CHAPTER, cityId, zoneId), false, "putting it back where it was reports no change");
+	assert.equal(store[CHAPTER].nodes[1].parentId, zoneId, "and the refused ones left it as it was");
 
-	// A map cannot lead back into itself, or the chain would be a loop with no
-	// end to walk and no level to come back to.
-	assert.equal(setZoneTarget(store, CHAPTER, cityId, zoneId), false, "the map a zone opens cannot open back into it");
-	assert.equal("targetMapId" in store[CHAPTER].nodes[1], false, "and the refused link is not written at all");
+	// A pin is a place, not a container. A tree where a location holds locations
+	// has no bottom to it, so the store refuses rather than storing it.
+	assert.equal(setNodeParent(store, CHAPTER, millId, cityId), false, "a location cannot hold anything");
+	assert.equal(setNodeParent(store, CHAPTER, zoneId, cityId), false, "and a zone cannot sit inside its own town");
+	assert.equal("parentId" in store[CHAPTER].nodes[0], false, "the refused links are not written at all");
 
-	// Forgetting where a zone leads is allowed: an empty door is a normal state.
-	assert.equal(setZoneTarget(store, CHAPTER, zoneId, null), true, "a zone can stop leading anywhere");
-	assert.equal("targetMapId" in store[CHAPTER].nodes[0], false, "the key is removed, not blanked");
-	assert.equal(setZoneTarget(store, CHAPTER, zoneId, null), false, "and doing it twice reports no change");
+	// Letting an element back out is allowed: the world is a normal place to be.
+	assert.equal(setNodeParent(store, CHAPTER, cityId, null), true, "an element can be lifted back to the world");
+	assert.equal("parentId" in store[CHAPTER].nodes[1], false, "the key is removed, not blanked");
+	assert.equal(setNodeParent(store, CHAPTER, cityId, null), false, "and doing it twice reports no change");
+}
+
+{
+	// The hover fill: one value the plugin does not read, only hands to the DOM.
+	const store: ChapterMaps = {
+		[CHAPTER]: { map_bg: null, nodes: [{ id: "zone", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }] }] },
+	};
+
+	assert.equal(setZoneFill(store, CHAPTER, "zone", "#3355ff"), true, "a colour is remembered");
+	assert.equal(store[CHAPTER].nodes[0].fill, "#3355ff", "and stored as written");
+	assert.equal(setZoneFill(store, CHAPTER, "zone", "3355ff"), false, "a value that is not a colour is refused, not normalised");
+	assert.equal(store[CHAPTER].nodes[0].fill, "#3355ff", "so the old one is left alone");
+	assert.equal(setZoneFill(store, CHAPTER, "zone", null), true, "and clearing it is a change");
+	assert.equal("fill" in store[CHAPTER].nodes[0], false, "the key is removed, not blanked");
+	assert.equal(setZoneFill(store, CHAPTER, "zone", null), false, "and doing it twice reports no change");
+	assert.equal(setZoneFill(store, CHAPTER, "nowhere", "#000000"), false, "a zone that is not on the map has no colour");
 }
 
 {
@@ -1215,7 +1275,7 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 			map_bg: null,
 			nodes: [
 				{ id: "zone", x: 0, y: 0, chars: [], kind: "zone", zone: [{ x: 0, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 9 }] },
-				{ id: "harbour", x: 10, y: 20, chars: ["tom"], targetMapId: "zone" },
+				{ id: "harbour", x: 10, y: 20, chars: ["tom"], parentId: "zone" },
 				{ id: "mill", x: 30, y: 40, chars: ["kim"] },
 			],
 		},
@@ -1223,7 +1283,7 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 
 	assert.equal(deleteNode(store, CHAPTER, "zone"), true, "the zone goes");
 	assert.deepEqual(store[CHAPTER].nodes.map((node) => node.id), ["harbour", "mill"], "and what was inside it is still there");
-	assert.equal("targetMapId" in store[CHAPTER].nodes[0], false, "let go of the link that no longer leads anywhere");
+	assert.equal("parentId" in store[CHAPTER].nodes[0], false, "let go of the link that no longer leads anywhere");
 	assert.deepEqual(
 		rootNodes(store[CHAPTER].nodes).map((node) => node.id),
 		["harbour", "mill"],
@@ -1359,7 +1419,7 @@ assert.deepEqual(parseSettings("junk"), DEFAULT_SETTINGS, "junk yields the defau
 	// chosen the note tab, and later the relationships tab, found the map open
 	// instead with nothing to say why - and the value they stored was simply
 	// gone the next time the settings were read.
-	for (const view of ["map", "note", "roster", "relationship"] as const) {
+	for (const view of ["map", "roster"] as const) {
 		const parsed = parseSettings({
 			schemaVersion: 1,
 			language: "en",
@@ -1370,6 +1430,24 @@ assert.deepEqual(parseSettings("junk"), DEFAULT_SETTINGS, "junk yields the defau
 			maps: {},
 		});
 		assert.equal(parsed.defaultView, view, `the ${view} tab survives a load`);
+	}
+}
+
+{
+	// The two tabs that stopped being tabs. Their data survives the refactor, so
+	// a vault written by the old build must still load - with the value remapped
+	// to a tab that exists, because "open the note tab" now has nothing to open.
+	for (const retired of ["note", "relationship"]) {
+		const parsed = parseSettings({
+			schemaVersion: 1,
+			language: "en",
+			defaultView: retired,
+			defaultCanvas: { width: 800, height: 600 },
+			exportPath: "",
+			pawns: [],
+			maps: {},
+		} as unknown as Record<string, unknown>);
+		assert.equal(parsed.defaultView, "map", `a stored ${retired} tab loads as the map`);
 	}
 }
 
@@ -1583,11 +1661,25 @@ for (const source of sources) {
 	// plugin mentions has to be registered, openable, and kept in step with the
 	// chapters - the same wiring in three places, which is exactly the shape of
 	// bug that leaves a tab looking broken with nothing in the console.
+	//
+	// Exactly two, deliberately: the command centre is the map plus the roster
+	// side by side. Notes are ordinary files in the main area and relationships
+	// are an overlay on the map, so neither is a tab to keep wired.
 	const mainSource = code("../main.ts");
-	const viewTypes = [...mainSource.matchAll(/VIEW_TYPE_[A-Z_]+/g)].map((match) => match[0]);
-	assert.ok(viewTypes.length >= 4, "the plugin has at least four tabs");
+	// Distinct constants, not occurrences: each VIEW_TYPE_* is named at its
+	// declaration and again at every use, so counting matches would have made
+	// "how many tabs are there" a question about how often the names appear.
+	const viewTypes = new Set(
+		[...mainSource.matchAll(/VIEW_TYPE_[A-Z_]+/g)].map((match) => match[0]),
+	);
+	assert.equal(viewTypes.size, 2, "the plugin has exactly two tabs");
+	assert.deepEqual(
+		[...viewTypes].sort(),
+		["VIEW_TYPE_MAP", "VIEW_TYPE_ROSTER"],
+		"and they are the map and the roster",
+	);
 
-	for (const viewType of new Set(viewTypes)) {
+	for (const viewType of viewTypes) {
 		assert.ok(
 			new RegExp(`registerView\\(\\s*${viewType}\\b`).test(mainSource),
 			`${viewType} must be registered with the workspace`,
@@ -1603,12 +1695,21 @@ for (const source of sources) {
 	// the check honest as tabs are added.
 	const openTab = mainSource.slice(mainSource.indexOf("async openTab("));
 	const accepted = openTab.slice(0, openTab.indexOf(")")).match(/"[a-z]+"/g) ?? [];
-	assert.ok(accepted.length >= 3, "openTab names the tabs it can open");
+	assert.deepEqual(accepted, ['"map"', '"roster"'], "openTab opens the map and the roster, nothing else");
 	for (const tab of accepted) {
 		const name = tab.slice(1, -1);
 		assert.ok(
 			new RegExp(`openTab\\("${name}"\\)`).test(mainSource),
 			`nothing asks for the ${name} tab, so it cannot be opened`,
+		);
+	}
+
+	// The retired tabs must stay retired. Their constants are gone, so a stray
+	// string left behind would fail at runtime with no tab to open.
+	for (const retired of ["note", "relationship"]) {
+		assert.ok(
+			!new RegExp(`openTab\\(\\s*"${retired}"`).test(mainSource),
+			`the ${retired} tab is not a tab any more and must not be opened as one`,
 		);
 	}
 }
@@ -1729,6 +1830,14 @@ interface FakePlugin {
 	registerEvent(ref: unknown): void;
 	/** Every ref handed to registerEvent, so a test can prove it was wired. */
 	events: unknown[];
+	/* The command centre. Recorded rather than performed, because what these tests
+	   are about is whether the toolbar button is wired to the right call - the
+	   calls themselves belong to main.ts, which is checked by reading its source. */
+	openNoteCalls: number;
+	openTabCalls: string[];
+	forgetCalls: number;
+	openNote(): void;
+	forgetChapter(): Promise<void>;
 }
 
 /**
@@ -1775,8 +1884,15 @@ function makePlugin(chapterPath: string | null, pawns: Pawn[] = []): FakePlugin 
 		updatePawn(pawn: Pawn): void {
 			settings.pawns = settings.pawns.map((item) => (item.id === pawn.id ? pawn : item));
 		},
-		openTab(): void {
-			/* no-op in tests */
+		openTab(this: FakePlugin, tab?: string): void {
+			this.openTabCalls.push(tab ?? "");
+		},
+		openNote(this: FakePlugin): void {
+			this.openNoteCalls += 1;
+		},
+		forgetChapter(this: FakePlugin): Promise<void> {
+			this.forgetCalls += 1;
+			return Promise.resolve();
 		},
 		refreshAllViews(): void {
 			/* no-op in tests */
@@ -1791,6 +1907,9 @@ function makePlugin(chapterPath: string | null, pawns: Pawn[] = []): FakePlugin 
 		events: [],
 		app: null,
 		notices: [],
+		openNoteCalls: 0,
+		openTabCalls: [],
+		forgetCalls: 0,
 	};
 
 	assert.throws(
@@ -2272,12 +2391,16 @@ const pawn: Pawn = { id: "tom", name: "Tom", initials: "To", color: "#e05c5c" };
 
 	const tools = internals.root.find((el) => el.classes.has("wsm-map__tools")) as FakeElement;
 	const buttons = tools.children.filter((child) => child.tag === "button");
-	assert.equal(buttons.length, 2, "the toolbar has a set-background and a clear-background button");
-	assert.equal(buttons[1].disabled, false, "clearing is available while there is a background");
+	// Looked up by `data-tool` rather than by position: the toolbar grew a zone
+	// tool and an anchor tool after this was written, and a test that counted
+	// buttons would have kept passing while quietly pointing at the wrong one.
+	const clearBg = buttons.find((button) => button.title === "Remove background");
+	assert.ok(clearBg, "the toolbar has a set-background and a clear-background button");
+	assert.equal(clearBg.disabled, false, "clearing is available while there is a background");
 
 	// A click, not a direct call: the button is what the reader actually uses,
 	// and wiring it up is the part that can silently go missing.
-	buttons[1].fire("click");
+	clearBg.fire("click");
 
 	assert.equal(plugin.settings.maps[CHAPTER_MAP].map_bg, null, "clicking the button removes the background");
 	// The point of the fix: the canvas does not stay at the picture's size.
@@ -2294,7 +2417,354 @@ const pawn: Pawn = { id: "tom", name: "Tom", initials: "To", color: "#e05c5c" };
 
 	const after = internals.root.find((el) => el.classes.has("wsm-map__tools")) as FakeElement;
 	const afterButtons = after.children.filter((child) => child.tag === "button");
-	assert.equal(afterButtons[1].disabled, true, "with no background left the button is disabled");
+	const afterClearBg = afterButtons.find((button) => button.title === "Remove background");
+	assert.equal(afterClearBg?.disabled, true, "with no background left the button is disabled");
+}
+
+/* ------------------------------------------------------------------ *
+ * Walking into a zone and back out again                              *
+ * ------------------------------------------------------------------ */
+
+{
+	interface ZoneNavInternals {
+		root: FakeElement;
+		nodesEl: FakeElement;
+		zonesEl: FakeElement;
+		crumbsEl: FakeElement;
+		backEl: FakeElement;
+		stageEl: FakeElement;
+		nodeIds: string[];
+		popoverEl: FakeElement | null;
+	}
+
+	const plugin = makePlugin(CHAPTER_MAP, [pawn]);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => {
+		maps[p] = {
+			nodes: [
+				{
+					id: "west",
+					x: 100,
+					y: 100,
+					chars: [],
+					kind: "zone",
+					zone: [
+						{ x: 0, y: 0 },
+						{ x: 400, y: 0 },
+						{ x: 400, y: 400 },
+						{ x: 0, y: 400 },
+					],
+				},
+				{ id: "mill", x: 600, y: 300, chars: [], parentId: "west" },
+				// Outside the outline: a sibling that must not answer clicks meant
+				// for the region, and the reason `zoneAt` is given the level rather
+				// than the whole map.
+				{ id: "east", x: 700, y: 100, chars: [], kind: "zone", zone: [
+					{ x: 600, y: 0 },
+					{ x: 900, y: 0 },
+					{ x: 900, y: 300 },
+				] },
+			],
+		};
+		// A canvas exactly as wide as the stub's wrap, so the stage scales 1:1 and a
+		// `clientX` in a test is the same number as the canvas x. Without this every
+		// coordinate below would have to be pre-divided by 0.3125, and a test whose
+		// numbers only work because of an arithmetic slip is worse than no test.
+		setCanvasSize(maps, p, [320, 320]);
+	});
+
+	const view = new MapView(new WorkspaceLeaf(new App()), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as ZoneNavInternals;
+
+	// At the top: only what has no parent, and the town's own pin is not drawn.
+	assert.equal(internals.nodeIds.length, 0, "a fresh chapter opens on the world");
+	const pins = (): FakeElement[] => internals.nodesEl.findAll((el) => el.dataset.nodeId !== undefined);
+	// The two regions are here because their labels carry `data-node-id` now -
+	// that is what lets a right-click on a label find its zone. `mill` is the
+	// point of the test: a location inside a region belongs to the level below.
+	assert.deepEqual(
+		pins().map((el) => el.dataset.nodeId),
+		["west", "east"],
+		"the world level shows the regions and nothing inside them",
+	);
+	assert.ok(
+		!pins().some((el) => el.dataset.nodeId === "mill"),
+		"a location inside a region is not on the world level",
+	);
+
+	// The trail starts at the world, and "Back" is offered with nowhere to go back to.
+	const crumbText = (): string[] =>
+		internals.crumbsEl.all().filter((el) => el.classes.has("wsm-map__crumb")).map((el) => el.text);
+	assert.deepEqual(crumbText(), ["World"], "the trail starts with the world and nothing else");
+	assert.equal(internals.backEl.classes.has("is-hidden"), true, "Back is hidden with no history to undo");
+
+	// A click inside the outline goes in. Fired on the polygon itself, which is
+	// what a real pointer hits when it lands on the border's fill area.
+	const west = internals.zonesEl.find((el) => el.dataset.zoneId === "west") as FakeElement;
+	assert.ok(west, "the region is drawn on the world level");
+	assert.equal(west.tag, "polygon", "a zone is a real polygon, not a div pretending to be one");
+	west.fire("click", { clientX: 200, clientY: 200 });
+	assert.deepEqual(internals.nodeIds, ["west"], "clicking inside a zone goes into it");
+
+	// Now inside: the town's pin appears, the outline does not, and the trail
+	// has grown a crumb.
+	assert.deepEqual(
+		pins().map((el) => el.dataset.nodeId),
+		["mill"],
+		"the location inside the region is drawn on this level",
+	);
+	assert.equal(
+		internals.zonesEl.find((el) => el.dataset.zoneId === "west"),
+		null,
+		"the region you are standing in is not drawn as an outline of itself",
+	);
+	assert.deepEqual(crumbText(), ["World", "west"], "the trail names the level entered");
+	assert.equal(internals.backEl.classes.has("is-hidden"), false, "Back appears once there is somewhere to go");
+
+	// A double-click here makes a child of the zone, not of the world.
+	internals.stageEl.fire("dblclick", { clientX: 500, clientY: 500 });
+	const stored = plugin.settings.maps[CHAPTER_MAP].nodes;
+	const made = stored[stored.length - 1];
+	assert.equal(made.parentId, "west", "a new location inside a region is its child");
+	assert.ok(internals.popoverEl, "and its popover opens straight away, as on the world level");
+
+	// Back out: the level changes, and the town's pin leaves the screen because it
+	// belongs one level down now.
+	internals.backEl.fire("click");
+	assert.deepEqual(internals.nodeIds, [], "Back leaves the region");
+	assert.ok(
+		!pins().some((el) => el.dataset.nodeId === "mill"),
+		"and the location that was inside it is no longer on the world level",
+	);
+	assert.equal(internals.backEl.disabled, true, "with the history spent, Back is disabled rather than live");
+}
+
+/* ------------------------------------------------------------------ *
+ * Back is a history, not a parent                                      *
+ * ------------------------------------------------------------------ */
+
+{
+	interface ZoneNavInternals2 {
+		nodeIds: string[];
+		backEl: FakeElement;
+		crumbsEl: FakeElement;
+	}
+
+	const plugin = makePlugin(CHAPTER_MAP, []);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => {
+		maps[p] = {
+			nodes: [
+				{ id: "a", x: 0, y: 0, chars: [], kind: "zone", zone: [
+					{ x: 0, y: 0 }, { x: 300, y: 0 }, { x: 300, y: 300 } ] },
+				{ id: "b", x: 0, y: 0, chars: [], kind: "zone", parentId: "a", zone: [
+					{ x: 0, y: 0 }, { x: 300, y: 0 }, { x: 300, y: 300 } ] },
+			],
+		};
+	});
+
+	const view = new MapView(new WorkspaceLeaf(new App()), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as ZoneNavInternals2;
+
+	// Two descents in a row, then one Back: a parent-link "up" would have landed
+	// on the world, but the history says where the writer actually was.
+	(view as unknown as { goInto(id: string): void }).goInto("a");
+	(view as unknown as { goInto(id: string): void }).goInto("b");
+	assert.deepEqual(internals.nodeIds, ["a", "b"], "two levels deep");
+
+	internals.backEl.fire("click");
+	assert.deepEqual(internals.nodeIds, ["a"], "one Back undoes one descent, not the whole branch");
+	internals.backEl.fire("click");
+	assert.deepEqual(internals.nodeIds, [], "and the second Back returns to the world");
+}
+
+/* ------------------------------------------------------------------ *
+ * Hovering a zone says so                                             *
+ * ------------------------------------------------------------------ */
+
+{
+	interface ZoneHoverInternals {
+		zonesEl: FakeElement;
+		stageEl: FakeElement;
+		nodeIds: string[];
+	}
+
+	const plugin = makePlugin(CHAPTER_MAP, []);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => {
+		setCanvasSize(maps, p, [320, 320]);
+		maps[p] = {
+			nodes: [
+				{ id: "a", x: 0, y: 0, chars: [], kind: "zone", zone: [
+					{ x: 0, y: 0 }, { x: 300, y: 0 }, { x: 300, y: 300 }, { x: 0, y: 300 } ] },
+				{ id: "b", x: 0, y: 0, chars: [], kind: "zone", zone: [
+					{ x: 400, y: 0 }, { x: 700, y: 0 }, { x: 700, y: 300 } ] },
+			],
+		};
+		setCanvasSize(maps, p, [320, 320]);
+	});
+
+	const view = new MapView(new WorkspaceLeaf(new App()), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as ZoneHoverInternals;
+
+	internals.stageEl.fire("pointermove", { clientX: 150, clientY: 150 });
+	const hovered = (): FakeElement | null => internals.zonesEl.find((el) => el.classes.has("is-hover"));
+	assert.equal(hovered()?.dataset.zoneId, "a", "the zone under the pointer lights up");
+
+	// Off every outline: nothing is lit, and the previous one is not left behind.
+	internals.stageEl.fire("pointermove", { clientX: 900, clientY: 900 });
+	assert.equal(hovered(), null, "moving off every outline clears the highlight");
+
+	// A drawing tool owns the pointer, so a hover would be a lie about what the
+	// next click will do.
+	(view as unknown as { toggleTool(tool: string): void }).toggleTool("zone");
+	internals.stageEl.fire("pointermove", { clientX: 150, clientY: 150 });
+	assert.equal(hovered(), null, "no zone highlights while a tool is armed");
+}
+
+/* ------------------------------------------------------------------ *
+ * Drawing a zone                                                      *
+ * ------------------------------------------------------------------ */
+
+{
+	interface ZoneDrawInternals {
+		nodesEl: FakeElement;
+		zonesEl: FakeElement;
+		stageEl: FakeElement;
+		nodeIds: string[];
+	}
+
+	const plugin = makePlugin(CHAPTER_MAP, []);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => setCanvasSize(maps, p, [320, 320]));
+	const view = new MapView(new WorkspaceLeaf(new App()), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as ZoneDrawInternals;
+
+	const toolButton = (internals as unknown as { root: FakeElement })
+		.root.find((el) => el.dataset.tool === "zone") as FakeElement;
+	assert.ok(toolButton, "the toolbar has a zone tool");
+	toolButton.fire("click");
+	assert.equal(toolButton.classes.has("is-active"), true, "the armed tool says so in the toolbar");
+
+	// Three corners, then back to the first: the shape closes.
+	internals.stageEl.fire("click", { clientX: 100, clientY: 100 });
+	internals.stageEl.fire("click", { clientX: 400, clientY: 100 });
+	internals.stageEl.fire("click", { clientX: 300, clientY: 400 });
+	assert.deepEqual(
+		plugin.settings.maps[CHAPTER_MAP]?.nodes ?? [],
+		[],
+		"three corners is not a zone yet, and nothing is written to disk",
+	);
+	assert.equal(
+		internals.zonesEl.findAll((el) => el.classes.has("wsm-draft")).length,
+		1,
+		"the outline being drawn is visible before it is committed",
+	);
+
+	internals.stageEl.fire("click", { clientX: 101, clientY: 101 });
+	const zone = plugin.settings.maps[CHAPTER_MAP].nodes[0];
+	assert.equal(zone.kind, "zone", "clicking back at the first corner closes the outline into a zone");
+	assert.equal(zone.zone?.length, 3, "and it keeps the three corners that were clicked");
+	assert.equal(
+		zone.parentId ?? null,
+		internals.nodeIds[internals.nodeIds.length - 1] ?? null,
+		"the zone is a child of the level it was drawn on, not of whatever was under the cursor",
+	);
+	// Drawing a zone does not change the level. Going in used to, and it was
+	// wrong twice over: the writer was moved out from under the tool they had just
+	// picked, and a nested zone landed one level deeper than they drew it.
+	// Naming it here is what the gesture was for, so the popover opens instead.
+	assert.deepEqual(
+		internals.nodeIds,
+		[],
+		"a freshly drawn zone leaves the level alone, so the tool stays where it was",
+	);
+	assert.ok(internals.popoverEl, "and the new zone's popover opens straight away, to name it");
+	const nameField = internals.popoverEl!.find((el) => el.classes.has("wsm-pop__name"));
+	assert.ok(nameField, "with the name field on it, ready to type into");
+	assert.equal(
+		(nameField as unknown as { focused: boolean }).focused,
+		true,
+		"and focused, because the first thing a zone needs is a name",
+	);
+	assert.equal(
+		internals.zonesEl.find((el) => el.classes.has("wsm-draft")),
+		null,
+		"the draft is gone once the zone is stored",
+	);
+}
+
+/* ------------------------------------------------------------------ *
+ * A bow tie is refused                                                *
+ * ------------------------------------------------------------------ */
+
+{
+	const plugin = makePlugin(CHAPTER_MAP, []);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => setCanvasSize(maps, p, [320, 320]));
+	const view = new MapView(new WorkspaceLeaf(new App()), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as { stageEl: FakeElement; zonesEl: FakeElement };
+
+	(view as unknown as { toggleTool(tool: string): void }).toggleTool("zone");
+	// A shape that crosses itself: its "inside" is decided by a counting rule
+	// rather than by what was drawn, so which half answers a click is a guess.
+	internals.stageEl.fire("click", { clientX: 0, clientY: 0 });
+	internals.stageEl.fire("click", { clientX: 300, clientY: 0 });
+	internals.stageEl.fire("click", { clientX: 0, clientY: 300 });
+	internals.stageEl.fire("click", { clientX: 300, clientY: 300 });
+	internals.stageEl.fire("click", { clientX: 0, clientY: 0 });
+
+	assert.deepEqual(
+		plugin.settings.maps[CHAPTER_MAP]?.nodes ?? [],
+		[],
+		"a self-crossing outline is never stored",
+	);
+	assert.ok(
+		internals.zonesEl.find((el) => el.classes.has("wsm-draft")),
+		"and the corners stay on screen, so the writer can fix the shape rather than start again",
+	);
+}
+
+/* ------------------------------------------------------------------ *
+ * A zone's sun                                                        *
+ * ------------------------------------------------------------------ */
+
+{
+	interface SunInternals {
+		nodesEl: FakeElement;
+		nodeIds: string[];
+	}
+
+	const plugin = makePlugin(CHAPTER_MAP, [pawn]);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => {
+		maps[p] = {
+			nodes: [
+				{
+					id: "region",
+					x: 0,
+					y: 0,
+					chars: [],
+					kind: "zone",
+					anchor: { x: 200, y: 200 },
+					zone: [{ x: 0, y: 0 }, { x: 400, y: 0 }, { x: 400, y: 400 }],
+				},
+				{ id: "town", x: 10, y: 10, chars: ["tom"], parentId: "region" },
+			],
+		};
+	});
+
+	const view = new MapView(new WorkspaceLeaf(new App()), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as SunInternals;
+
+	const sun = internals.nodesEl.find((el) => el.classes.has("wsm-sun"));
+	assert.ok(sun, "a zone with an anchor draws its sun");
+	assert.equal(
+		sun.find((el) => el.getAttribute("data-drag") === "char") !== null,
+		true,
+		"the sun holds an avatar for a character who is one level down, inside the town",
+	);
+	assert.equal(sun.find((el) => el.classes.has("wsm-sun__more")), null, "one character fits, so there is no overflow badge");
 }
 
 /* ------------------------------------------------------------------ *
@@ -2747,6 +3217,213 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		RU,
 	);
 	assert.equal(stale.includes("ghost"), false, "a token with no roster entry is skipped");
+}
+
+{
+	// The map is a tree and the digest has to read like one.
+	//
+	// A flat list of every node made the summary contradict the map: Ян stands in
+	// Причал, Причал is inside Гавань, and the flat version listed Ян against the
+	// Причал while Гавань read as empty. A writer who trusts the note to say who
+	// is where would conclude the region was abandoned.
+	const nested: StoredChapterMap = {
+		map_bg: null,
+		nodes: [
+			{
+				id: "harbour",
+				label: "Гавань",
+				kind: "zone",
+				zone: [
+					{ x: 0, y: 0 },
+					{ x: 10, y: 0 },
+					{ x: 10, y: 10 },
+				],
+				x: 0,
+				y: 0,
+				chars: [],
+			},
+			{ id: "pier", label: "Причал", x: 1, y: 1, chars: ["yan"], parentId: "harbour" },
+			{ id: "inn", label: "Харчевня", x: 2, y: 2, chars: ["kai"], parentId: "harbour" },
+			// A plain location at the top level, so the two shapes are in one file.
+			{ id: "road", label: "Дорога", x: 3, y: 3, chars: ["liran"] },
+		],
+	};
+
+	assert.equal(
+		buildNoteBlock(nested, [yana, kai, liran], RU),
+		[
+			"%% wsm-summary-start %%",
+			"### 📍 Размещение персонажей в этой главе:",
+			// The zone's line is its whole cast, so a reader can stop at the region.
+			"- **Гавань**: [[Ян]], [[Кай]]",
+			"  - **Причал**: [[Ян]]",
+			"  - **Харчевня**: [[Кай]]",
+			"- **Дорога**: [[Лиран]]",
+			"%% wsm-summary-end %%",
+		].join("\n"),
+		"a zone nests what it contains and speaks for the whole subtree",
+	);
+
+	// A character listed twice - once directly, once in a child - is one token on
+	// the region's line, not a claim they are in two places.
+	const shared: StoredChapterMap = {
+		map_bg: null,
+		nodes: [
+			{
+				id: "harbour",
+				label: "Гавань",
+				kind: "zone",
+				zone: [
+					{ x: 0, y: 0 },
+					{ x: 10, y: 0 },
+					{ x: 10, y: 10 },
+				],
+				x: 0,
+				y: 0,
+				chars: ["yan"],
+			},
+			{ id: "pier", label: "Причал", x: 1, y: 1, chars: ["yan"], parentId: "harbour" },
+		],
+	};
+	const once = buildNoteBlock(shared, [yana], RU);
+	assert.equal(
+		once.split("[[Ян]]").length - 1,
+		2,
+		"a character in a zone and in its town appears once per line that mentions them",
+	);
+
+	// Three deep, because two deep would not prove the recursion goes all the way.
+	const deep: StoredChapterMap = {
+		map_bg: null,
+		nodes: [
+			{
+				id: "a",
+				label: "Область",
+				kind: "zone",
+				zone: [
+					{ x: 0, y: 0 },
+					{ x: 10, y: 0 },
+					{ x: 10, y: 10 },
+				],
+				x: 0,
+				y: 0,
+				chars: [],
+			},
+			{
+				id: "b",
+				label: "Город",
+				kind: "zone",
+				parentId: "a",
+				zone: [
+					{ x: 0, y: 0 },
+					{ x: 5, y: 0 },
+					{ x: 5, y: 5 },
+				],
+				x: 1,
+				y: 1,
+				chars: [],
+			},
+			{ id: "c", label: "Улица", x: 2, y: 2, chars: ["yan"], parentId: "b" },
+		],
+	};
+	assert.equal(
+		buildNoteBlock(deep, [yana], RU),
+		[
+			"%% wsm-summary-start %%",
+			"### 📍 Размещение персонажей в этой главе:",
+			"- **Область**: [[Ян]]",
+			"  - **Город**: [[Ян]]",
+			"    - **Улица**: [[Ян]]",
+			"%% wsm-summary-end %%",
+		].join("\n"),
+		"nesting goes all the way down, two spaces per level",
+	);
+
+	// A location is not a zone: its line is its own people, not a subtree that
+	// happens to be empty. Reading "the people here" as everything below would
+	// be a claim about a hierarchy the map does not have.
+	const location = buildNoteBlock(
+		{ map_bg: null, nodes: [{ id: "p", label: "Причал", x: 0, y: 0, chars: ["yan"] }] },
+		[yana],
+		RU,
+	);
+	assert.equal(
+		location.includes("- **Причал**: [[Ян]]"),
+		true,
+		"a plain location lists exactly its own characters",
+	);
+
+	// A child of a node that is gone. The tree is in pieces, and the writer still
+	// needs to see where they are - hiding them would silently drop a location
+	// out of the digest.
+	const orphaned: StoredChapterMap = {
+		map_bg: null,
+		nodes: [{ id: "orphan", label: "Потерянка", x: 0, y: 0, chars: ["yan"], parentId: "deleted" }],
+	};
+	assert.equal(
+		buildNoteBlock(orphaned, [yana], RU).includes("- **Потерянка**: [[Ян]]"),
+		true,
+		"a location whose parent is missing is listed at the top rather than dropped",
+	);
+
+	// A cycle: a is inside b and b is inside a. There is no root to walk from, so
+	// a naive walk prints nothing at all - the digest would claim the chapter has
+	// no locations while the map clearly has two. It has to terminate and print
+	// both, exactly once.
+	const looped: StoredChapterMap = {
+		map_bg: null,
+		nodes: [
+			{ id: "a", label: "А", x: 0, y: 0, chars: ["yan"], parentId: "b" },
+			{ id: "b", label: "Б", x: 1, y: 1, chars: ["kai"], parentId: "a" },
+		],
+	};
+	const loopedBlock = buildNoteBlock(looped, [yana, kai], RU);
+	assert.equal(
+		(loopedBlock.match(/- \*\*/g) ?? []).length,
+		2,
+		"a parent cycle still lists every location once instead of hanging or printing nothing",
+	);
+	assert.equal(loopedBlock.includes("Б"), true, "and both are really in there");
+}
+
+{
+	// The signature has to see the shape of the tree, because the digest does.
+	// Moving a town into a region rewrites the file; if the signature ignored
+	// `parentId` the old nesting would sit there and nothing would look wrong.
+	const before = contentSignature(
+		{
+			map_bg: null,
+			nodes: [
+				{ id: "pier", label: "Причал", x: 0, y: 0, chars: ["yan"] },
+				{ id: "harbour", label: "Гавань", x: 0, y: 0, chars: [], kind: "zone" },
+			],
+		},
+		[yana],
+	);
+	const after = contentSignature(
+		{
+			map_bg: null,
+			nodes: [
+				{ id: "pier", label: "Причал", x: 0, y: 0, chars: ["yan"], parentId: "harbour" },
+				{ id: "harbour", label: "Гавань", x: 0, y: 0, chars: [], kind: "zone" },
+			],
+		},
+		[yana],
+	);
+	assert.notEqual(before, after, "re-parenting a location changes the signature");
+
+	// Still no write for a drag, which is the whole point of excluding geometry.
+	const dragged = contentSignature(
+		{
+			map_bg: null,
+			nodes: [
+				{ id: "pier", label: "Причал", x: 400, y: 900, chars: ["yan"], parentId: "harbour" },
+				{ id: "harbour", label: "Гавань", x: 0, y: 0, chars: [], kind: "zone" },
+			],
+		},
+		[yana],
+	);
+	assert.equal(dragged, after, "but dragging a location does not");
 }
 
 {
@@ -3223,6 +3900,96 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 }
 
 {
+	// The bug, exactly as it was reported: the file on disk was correct and the
+	// editor showed nothing.
+	//
+	// A leaf that was opened before the note existed holds "". An empty buffer is
+	// not a deferral-worthy edit - it is a buffer nobody has touched - but "does it
+	// match disk" said no, so the write was parked. A parked write is only released
+	// by a save, and an empty buffer the author never typed in never produces one.
+	// The digest was therefore written once and never again, and the writer stared
+	// at an empty pane while the file underneath them was fine.
+	const chapter = "Глава.md";
+	const target = notePathFor(chapter);
+	const app = new App();
+	const plugin = makePlugin(chapter, [yana]);
+	plugin.settings.maps[chapter] = { map_bg: null, nodes: [{ id: "n1", label: "Яна", x: 0, y: 0, chars: ["yan"] }] };
+
+	// The editor is open on the path before there is a file to open. This is the
+	// whole situation: a stale buffer, not an unsaved edit.
+	app.openEditorBuffers[target] = "";
+
+	const writer = new NoteWriter(withApp(plugin, app) as never);
+	assert.equal(await writer.write(chapter), true, "an untouched empty buffer does not defer the first write");
+	assert.equal(app.adapterWrites.length, 1, "and the file is written");
+	assert.equal(
+		app.adapterFiles[target].includes("[[Ян]]"),
+		true,
+		"so the digest is on disk rather than waiting for a save that will never come",
+	);
+	assert.deepEqual(writer.deferredChapters(), [], "and nothing is left waiting");
+
+	// The same trap one step along, and this is the case the memory of our own
+	// writes exists for: the editor is holding text *we* put there, and the file
+	// on disk is no longer that text - a sync, a revert, another machine. The
+	// buffer differs from disk, so "does it differ" says defer, and it would wait
+	// for a save that has nothing to save. Ours is not the author's to protect.
+	const ours = app.adapterFiles[target];
+	app.openEditorBuffers[target] = ours;
+	// The file moves underneath: a revert, a sync, another machine. Now the buffer
+	// and the disk genuinely differ, and neither is empty.
+	app.adapterFiles[target] = ours.replace(/- \*\*Яна\*\*/, "- **Старое имя**");
+	assert.notEqual(
+		app.adapterFiles[target],
+		app.openEditorBuffers[target],
+		"the pretense is real: disk and buffer hold different text",
+	);
+
+	plugin.settings.maps[chapter].nodes[0].label = "Порт Яна";
+	assert.equal(
+		await writer.write(chapter, true),
+		true,
+		"a buffer holding our own text does not defer, even when the file moved under it",
+	);
+	assert.equal(
+		app.adapterFiles[target].includes("Порт Яна"),
+		true,
+		"the rename reached the disk behind the stale pane",
+	);
+	assert.deepEqual(writer.deferredChapters(), [], "with nothing left waiting");
+
+	// The one case that must still wait: the author is typing. Their text is not
+	// on disk and is not anything we wrote, so it is theirs and the write waits.
+	const mine = app.adapterFiles[target];
+	app.openEditorBuffers[target] = `${mine}\n\nсвоими словами`;
+	plugin.settings.maps[chapter].nodes[0].label = "Город Яна";
+	assert.equal(await writer.write(chapter, true), false, "a real unsaved edit is still deferred");
+	assert.deepEqual(writer.deferredChapters(), [chapter], "and the chapter is remembered as waiting");
+	assert.equal(
+		app.adapterFiles[target].includes("Город Яна"),
+		false,
+		"with nothing written over the author's words",
+	);
+}
+
+{
+	// A stale buffer is not always something we wrote. Obsidian hands out a
+	// markdown file it found already in the vault, and if the writer has not typed
+	// in it, it is a buffer with no unsaved changes in it - `null` is the honest
+	// answer there, and the write goes straight through.
+	const chapter = "Глава.md";
+	const target = notePathFor(chapter);
+	const app = new App();
+	const plugin = makePlugin(chapter, [yana]);
+	plugin.settings.maps[chapter] = { map_bg: null, nodes: [{ id: "n1", label: "Яна", x: 0, y: 0, chars: ["yan"] }] };
+	app.openEditorBuffers[target] = undefined as never;
+
+	const writer = new NoteWriter(withApp(plugin, app) as never);
+	assert.equal(await writer.write(chapter), true, "a leaf that reports no buffer never defers");
+	assert.deepEqual(writer.deferredChapters(), [], "nothing to wait for");
+}
+
+{
 	// Export: everything under the hidden folder, mirrored into the visible one.
 	const app = new App();
 	const plugin = makePlugin(null, [yana]);
@@ -3431,7 +4198,7 @@ function buttonByText(editor: FakeElement, label: string): FakeElement | null {
 }
 
 /* ------------------------------------------------------------------ *
- * the relationships tab                                                *
+ * the relationship overlay                                              *
  * ------------------------------------------------------------------ */
 
 interface RelInternals {
@@ -3439,10 +4206,22 @@ interface RelInternals {
 	pick(token: string): void;
 }
 
-function relGraph(view: RelationshipView): FakeElement {
-	const root = (view as unknown as RelInternals).root;
+/**
+ * Mount a panel the way the map does: a plain element to build into.
+ *
+ * It is not a view any more, so there is no leaf, no `onOpen` and no lifecycle
+ * to drive — the constructor paints, which is the whole point of the refactor.
+ */
+function mountRel(plugin: unknown): { panel: RelationshipPanel; host: FakeElement } {
+	const host = new FakeElement() as unknown as HTMLElement;
+	const panel = new RelationshipPanel(host, plugin as never);
+	return { panel, host: host as unknown as FakeElement };
+}
+
+function relGraph(panel: RelationshipPanel): FakeElement {
+	const root = (panel as unknown as RelInternals).root as unknown as FakeElement;
 	const graph = root.find((el) => el.classes.has("wsm-rel__graph"));
-	assert.ok(graph, "the tab has a graph area");
+	assert.ok(graph, "the panel has a graph area");
 	return graph as FakeElement;
 }
 
@@ -3458,20 +4237,20 @@ function hasAttrClass(el: FakeElement, name: string): boolean {
 	return (el.getAttribute("class") ?? "").split(/\s+/).includes(name);
 }
 
-function relNodes(view: RelationshipView): FakeElement[] {
-	return relGraph(view).findAll((el) => hasAttrClass(el, "wsm-rel__node"));
+function relNodes(panel: RelationshipPanel): FakeElement[] {
+	return relGraph(panel).findAll((el) => hasAttrClass(el, "wsm-rel__node"));
 }
 
-function relLines(view: RelationshipView): FakeElement[] {
-	return relGraph(view).findAll((el) => hasAttrClass(el, "wsm-rel__line"));
+function relLines(panel: RelationshipPanel): FakeElement[] {
+	return relGraph(panel).findAll((el) => hasAttrClass(el, "wsm-rel__line"));
 }
 
 {
 	// A chapter with nobody on the map has nothing to draw, and says so instead
 	// of showing an empty circle the writer has to interpret.
 	const plugin = makePlugin(CHAPTER_MAP, [pawn]);
-	const view = new RelationshipView(new WorkspaceLeaf(new App()), plugin as never);
-	await view.onOpen();
+	// The panel paints itself on construction, so there is no onOpen to await.
+	const { panel: view } = mountRel(plugin);
 
 	assert.equal(relNodes(view).length, 0, "no character on the map means no vertex");
 	assert.ok(
@@ -3495,8 +4274,8 @@ function relLines(view: RelationshipView): FakeElement[] {
 		};
 	});
 
-	const view = new RelationshipView(new WorkspaceLeaf(new App()), plugin as never);
-	await view.onOpen();
+	// The panel paints itself on construction, so there is no onOpen to await.
+	const { panel: view } = mountRel(plugin);
 	const internals = view as unknown as RelInternals;
 
 	assert.equal(relNodes(view).length, 2, "both characters standing on the map get a vertex");
@@ -3568,8 +4347,8 @@ function relLines(view: RelationshipView): FakeElement[] {
 		};
 	});
 
-	const view = new RelationshipView(new WorkspaceLeaf(new App()), plugin as never);
-	await view.onOpen();
+	// The panel paints itself on construction, so there is no onOpen to await.
+	const { panel: view } = mountRel(plugin);
 	const internals = view as unknown as RelInternals;
 
 	// Same character twice: the pick is dropped, not a tie to itself.
@@ -3617,8 +4396,8 @@ function relLines(view: RelationshipView): FakeElement[] {
 		};
 	});
 
-	const view = new RelationshipView(new WorkspaceLeaf(new App()), plugin as never);
-	await view.onOpen();
+	// The panel paints itself on construction, so there is no onOpen to await.
+	const { panel: view } = mountRel(plugin);
 
 	assert.equal(relNodes(view).length, 1, "only the character on the map gets a vertex");
 	assert.equal(relLines(view).length, 0, "and no line is drawn to or from thin air");
@@ -3645,8 +4424,8 @@ function relLines(view: RelationshipView): FakeElement[] {
 			],
 		};
 	});
-	const view = new RelationshipView(new WorkspaceLeaf(new App()), plugin as never);
-	await view.onOpen();
+	// The panel paints itself on construction, so there is no onOpen to await.
+	const { panel: view } = mountRel(plugin);
 	assert.equal(relNodes(view).length, 1, "the same character on two locations is one vertex");
 }
 
@@ -3664,8 +4443,8 @@ function relLines(view: RelationshipView): FakeElement[] {
 			links: [{ a: "tom", b: "aya", kind: "secret" }],
 		};
 	});
-	const view = new RelationshipView(new WorkspaceLeaf(new App()), plugin as never);
-	await view.onOpen();
+	// The panel paints itself on construction, so there is no onOpen to await.
+	const { panel: view } = mountRel(plugin);
 
 	const remove = (view as unknown as RelInternals).root.find((el) => el.classes.has("wsm-rel__remove")) as FakeElement;
 	assert.ok(remove, "each listed tie offers a way to take it back");
@@ -3697,8 +4476,8 @@ function relLines(view: RelationshipView): FakeElement[] {
 		maps[p] = { map_bg: null, nodes: [{ id: "gate", x: 5, y: 5, chars: ["tom"] }] };
 	});
 
-	const view = new RelationshipView(new WorkspaceLeaf(new App()), plugin as never);
-	await view.onOpen();
+	// The panel paints itself on construction, so there is no onOpen to await.
+	const { panel: view } = mountRel(plugin);
 	assert.equal(relLines(view).length, 1, "chapter 1 draws its own tie");
 
 	plugin.activeChapterPath = "Chapters/Chapter 2.md";
@@ -3726,8 +4505,8 @@ function relLines(view: RelationshipView): FakeElement[] {
 		maps[p] = { map_bg: null, nodes: [{ id: "gate", x: 5, y: 5, chars: ["tom"] }] };
 	});
 
-	const view = new RelationshipView(new WorkspaceLeaf(new App()), plugin as never);
-	await view.onOpen();
+	// The panel paints itself on construction, so there is no onOpen to await.
+	const { panel: view } = mountRel(plugin);
 	(view as unknown as RelInternals).pick("aya");
 
 	plugin.activeChapterPath = "Chapters/Chapter 2.md";
@@ -3737,6 +4516,313 @@ function relLines(view: RelationshipView): FakeElement[] {
 		relGraph(view).findAll((el) => el.classes.has("wsm-rel__kind")).length,
 		0,
 		"the pick from the previous chapter is forgotten, not completed",
+	);
+}
+
+/* ------------------------------------------------------------------ *
+ * the command centre                                                    *
+ * ------------------------------------------------------------------ */
+
+{
+	// Four tabs became two, and the four things a tab used to do became four
+	// buttons in one row on the map. Each button is checked against the call it
+	// is supposed to make, because a button wired to the wrong call is the kind
+	// of thing that works right until it does not.
+	const app = new App();
+	const plugin = makePlugin(CHAPTER_MAP, [pawn]);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => {
+		maps[p] = {
+			map_bg: null,
+			nodes: [{ id: "n1", label: "Яна", x: 10, y: 10, chars: ["tom"] }],
+		};
+	});
+	setCanvasSize(plugin.settings.maps, CHAPTER_MAP, [320, 320]);
+
+	const view = new MapView(new WorkspaceLeaf(app), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as {
+		root: FakeElement;
+		toolsEl: FakeElement;
+		forgetButton: FakeElement;
+		nodeIds: string[];
+		stageEl: FakeElement;
+		zonesEl: FakeElement;
+	};
+
+	const tool = (title: string): FakeElement => {
+		const button = internals.toolsEl.children.find(
+			(child) => child.tag === "button" && child.title === title,
+		);
+		assert.ok(button, `the toolbar has a "${title}" button`);
+		return button;
+	};
+
+	// The note is a file in the main area, so the button opens it rather than
+	// asking for a tab that no longer exists.
+	const note = tool("WSM: Chapter Note");
+	assert.equal(note.title, "WSM: Chapter Note", "the note button is titled with its action");
+	note.fire("click");
+	assert.equal(plugin.openNoteCalls, 1, "the note button opens the chapter note");
+
+	// The roster is the one other tab, so this one still goes through openTab -
+	// and with the name of the tab, not a bare call.
+	const roster = tool("Characters");
+	roster.fire("click");
+	assert.deepEqual(plugin.openTabCalls, ["roster"], "the roster button opens the roster tab");
+
+	// The graph is an overlay on this view, so its button asks this view and
+	// nothing global: no tab, no second view to keep in step.
+	const rel = tool("Relationships");
+	assert.equal(internals.root.find((el) => el.classes.has("wsm-overlay")), null, "no overlay before the click");
+	rel.fire("click");
+	assert.ok(
+		internals.root.find((el) => el.classes.has("wsm-overlay")),
+		"the relationships button opens the overlay over the map",
+	);
+	rel.fire("click");
+	assert.equal(
+		internals.root.find((el) => el.classes.has("wsm-overlay")),
+		null,
+		"and pressing it again closes it, the way every other toggle behaves",
+	);
+
+	// The destructive one is last in the row, and disabled when there is nothing
+	// to destroy: a button that confirms the deletion of nothing is worse than a
+	// greyed-out one.
+	assert.equal(internals.forgetButton.disabled, false, "forget is live while the chapter has a map");
+	const tools = internals.toolsEl.children.filter((child) => child.tag === "button");
+	assert.equal(tools[tools.length - 1], internals.forgetButton, "and it is the last button in the row");
+
+	const noMap = makePlugin("Chapters/Chapter 2.md", [pawn]);
+	const emptyView = new MapView(new WorkspaceLeaf(new App()), noMap as never);
+	await emptyView.onOpen();
+	assert.equal(
+		(emptyView as unknown as { forgetButton: FakeElement }).forgetButton.disabled,
+		true,
+		"a chapter with no map of its own has nothing to forget",
+	);
+}
+
+{
+	// The overlay closes the way any dialog does, and closing it gives the pending
+	// pick back rather than stranding it on a panel that is about to be thrown away.
+	const app = new App();
+	const plugin = makePlugin(CHAPTER_MAP, [pawn]);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => {
+		maps[p] = {
+			map_bg: null,
+			nodes: [
+				{ id: "pier", x: 10, y: 10, chars: ["tom"] },
+				{ id: "inn", x: 20, y: 20, chars: ["tom"] },
+			],
+		};
+	});
+	setCanvasSize(plugin.settings.maps, CHAPTER_MAP, [320, 320]);
+
+	const view = new MapView(new WorkspaceLeaf(app), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as {
+		root: FakeElement;
+		relOverlay: FakeElement | null;
+		relPanel: RelationshipPanel | null;
+	};
+
+	internals.root.find((el) => el.classes.has("wsm-map__tools"))!
+		.children.find((child) => child.tag === "button" && child.title === "Relationships")!
+		.fire("click");
+	assert.ok(internals.relOverlay, "the overlay is open");
+	assert.ok(internals.relPanel, "with a live panel inside it");
+
+	// Escape is the view's own handler, wired once for the whole view, and it is
+	// on the document rather than the pane: a key press in an editor has to reach
+	// it too. It goes to the topmost thing, so the writer's hands never have to
+	// find a close button.
+	pressKey("Escape");
+	assert.equal(internals.relOverlay, null, "Escape closes the overlay");
+	assert.equal(internals.relPanel, null, "and drops the panel with it");
+
+	// The scrim, not the card. Clicking the card is reading.
+	internals.root.find((el) => el.classes.has("wsm-map__tools"))!
+		.children.find((child) => child.tag === "button" && child.title === "Relationships")!
+		.fire("click");
+	const overlay = internals.relOverlay!;
+	overlay.fire("click", { target: overlay });
+	assert.equal(internals.relOverlay, null, "clicking the scrim closes the overlay");
+
+	// Reopening rebuilds the panel from scratch, so a half-finished pair from the
+	// last session is not waiting for a second click that never meant to pair with it.
+	internals.root.find((el) => el.classes.has("wsm-map__tools"))!
+		.children.find((child) => child.tag === "button" && child.title === "Relationships")!
+		.fire("click");
+	(internals.relPanel as unknown as RelInternals).pick("tom");
+	assert.equal(
+		(internals.relPanel as unknown as RelInternals).root
+			.find((el) => el.classes.has("wsm-rel__kinds")),
+		null,
+		"one pick alone is not a pair",
+	);
+	pressKey("Escape");
+	internals.root.find((el) => el.classes.has("wsm-map__tools"))!
+		.children.find((child) => child.tag === "button" && child.title === "Relationships")!
+		.fire("click");
+	assert.equal(
+		(internals.relPanel as unknown as RelInternals).root
+			.find((el) => el.classes.has("wsm-rel__kinds")),
+		null,
+		"and the pick did not survive the reopen",
+	);
+}
+
+{
+	// An armed tool owns the click, everywhere it can land.
+	//
+	// The stage handler has always checked the tool first, and it still does — but
+	// a click inside a zone arrives at the polygon first, and that used to drill in
+	// and stop the event before the stage ever saw it. The same was true of a zone's
+	// label and of the "+K" key. So the guard in one place is not enough: every
+	// element that sits over the stage has to let the tool through as well.
+	const app = new App();
+	const plugin = makePlugin(CHAPTER_MAP, [pawn]);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => {
+		maps[p] = {
+			map_bg: null,
+			nodes: [
+				{
+					id: "west",
+					label: "Запад",
+					kind: "zone",
+					zone: [
+						{ x: 0, y: 0 },
+						{ x: 160, y: 0 },
+						{ x: 160, y: 160 },
+						{ x: 0, y: 160 },
+					],
+					x: 0,
+					y: 0,
+					chars: [],
+				},
+				{ id: "inn", label: "Харчевня", x: 50, y: 50, chars: ["tom"], parentId: "west" },
+			],
+		};
+	});
+	setCanvasSize(plugin.settings.maps, CHAPTER_MAP, [320, 320]);
+
+	const view = new MapView(new WorkspaceLeaf(app), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as {
+		root: FakeElement;
+		nodesEl: FakeElement;
+		zonesEl: FakeElement;
+		stageEl: FakeElement;
+		nodeIds: string[];
+		tool: string;
+	};
+
+	const zoneTool = (internals.root as FakeElement)
+		.find((el) => el.dataset.tool === "zone") as FakeElement;
+	zoneTool.fire("click");
+	assert.equal(internals.tool, "zone", "the zone tool is armed");
+
+	// On the polygon itself, which is where a writer drawing a zone spends the
+	// whole time.
+	const polygon = internals.zonesEl.children[0];
+	polygon.fire("click", { clientX: 80, clientY: 80 });
+	assert.deepEqual(
+		internals.nodeIds,
+		[],
+		"a click inside an existing zone draws a corner instead of going in",
+	);
+
+	// On the zone's label, which is the smallest target on the map and the easiest
+	// to hit by accident.
+	const label = internals.nodesEl.find((el) => el.dataset.nodeId === "west") as FakeElement;
+	assert.ok(label, "the zone label carries its id, which is how a right-click finds it");
+	label.fire("click", { clientX: 0, clientY: 0 });
+	assert.deepEqual(internals.nodeIds, [], "and a click on the label does not go in either");
+
+	// On the keyboard affordance for a new location, which is the same gesture by
+	// another route and had the same problem.
+	const plusK = internals.nodesEl.find((el) => el.dataset.addChar !== undefined);
+	if (plusK) {
+		plusK.fire("click");
+		assert.deepEqual(internals.nodeIds, [], "and neither does the +K button");
+	}
+
+	// With the tool put away, the very same click means "go in" again. Without this
+	// half the test would pass for a view that simply ignored clicks.
+	internals.tool = "none";
+	label.fire("click", { clientX: 0, clientY: 0 });
+	polygon.fire("click", { clientX: 80, clientY: 80 });
+	assert.deepEqual(
+		internals.nodeIds,
+		["west"],
+		"once the tool is away a click on the zone goes in, as it always did",
+	);
+}
+
+{
+	// A right-click on a zone opens its card. The label has to be findable for
+	// that to work, and the card opens for the zone the writer pointed at rather
+	// than for whatever happens to be first.
+	const app = new App();
+	const plugin = makePlugin(CHAPTER_MAP, [pawn]);
+	plugin.updateMap(CHAPTER_MAP, (maps, p) => {
+		maps[p] = {
+			map_bg: null,
+			nodes: [
+				{
+					id: "west",
+					label: "Запад",
+					kind: "zone",
+					zone: [
+						{ x: 0, y: 0 },
+						{ x: 160, y: 0 },
+						{ x: 160, y: 160 },
+					],
+					x: 0,
+					y: 0,
+					chars: [],
+				},
+				{
+					id: "east",
+					label: "Восток",
+					kind: "zone",
+					zone: [
+						{ x: 200, y: 0 },
+						{ x: 300, y: 0 },
+						{ x: 300, y: 160 },
+					],
+					x: 200,
+					y: 0,
+					chars: [],
+				},
+			],
+		};
+	});
+	setCanvasSize(plugin.settings.maps, CHAPTER_MAP, [320, 320]);
+
+	const view = new MapView(new WorkspaceLeaf(app), plugin as never);
+	await view.onOpen();
+	const internals = view as unknown as { root: FakeElement; nodesEl: FakeElement; popoverEl: FakeElement | null };
+
+	const labelFor = (id: string): FakeElement => {
+		const el = internals.nodesEl.find((node) => node.dataset.nodeId === id) as FakeElement;
+		assert.ok(el, `the ${id} zone has a label`);
+		return el;
+	};
+
+	labelFor("east").fire("contextmenu");
+	assert.equal(
+		internals.popoverEl?.dataset.nodeId,
+		"east",
+		"a right-click on a label opens that zone's card, not the first one",
+	);
+
+	labelFor("west").fire("contextmenu");
+	assert.equal(
+		internals.popoverEl?.dataset.nodeId,
+		"west",
+		"and the other one opens the other one",
 	);
 }
 

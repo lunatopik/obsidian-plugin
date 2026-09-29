@@ -17,10 +17,17 @@ import type { MapNode, ZonePoint } from "./types";
  * a walk that loops, a polygon that swallows its neighbour — and a browser is a
  * poor place to look for any of them.
  *
- * The nesting itself is a chain over one flat `nodes[]`: `P.targetMapId` names
- * the element inside P, so P's children are that one node. The level the view is
- * showing is not stored, it is derived from the trail the writer walked, so a
- * chapter's data has no opinion about where they were last looking.
+ * The nesting is a forest over one flat `nodes[]`, and the edges run *upwards*:
+ * each node names its own `parentId`, and the children of a zone are found by
+ * filtering on it. The direction is the whole design. An edge pointing the other
+ * way — the parent naming what is inside it — is just as easy to write and can
+ * only ever name one child per element, which quietly forbids the normal case of
+ * a region holding several towns. Pointing each town back at its region makes a
+ * level a plain filter, and costs nothing to walk.
+ *
+ * The level the view is showing is not stored either, it is derived from the
+ * trail the writer walked, so a chapter's data has no opinion about where they
+ * were last looking.
  */
 
 /** A point in design-canvas coordinates. */
@@ -202,57 +209,52 @@ export function nodeById(nodes: readonly MapNode[], id: string): MapNode | null 
 /**
  * What is inside `id`.
  *
- * The link runs the way the writer walks it: `targetMapId` is where a click on an
- * element takes you, so it names the element *inside* it. That is also why a
- * region holding several towns is drawn as a region zone with a town zone inside
- * it rather than one zone listing its towns — the same shape a strategy game
- * uses, and the only one a single link per element can express.
+ * A filter, and that is the whole point of pointing the edges upwards: a region
+ * holding four towns is four nodes that each name it, and nothing about the
+ * region has to know they are there.
  *
- * A link that names a node which is not on this map resolves to nothing. The
- * store drops those on load, but a walk that depended on that would be one
- * refactor away from hanging on a dangling id.
+ * The array is returned in map order, so a level is drawn in the order the writer
+ * placed its elements rather than in an order that changes between two renders.
  */
 export function childrenOf(nodes: readonly MapNode[], id: string): MapNode[] {
-	const node = indexNodes(nodes).get(id);
-	if (!node?.targetMapId) return [];
-	const child = indexNodes(nodes).get(node.targetMapId);
-	return child ? [child] : [];
+	return nodes.filter((node) => node.parentId === id);
 }
 
 /**
- * Every node below `id`, following the chain, excluding `id` itself.
+ * Every node below `id`, breadth first, excluding `id` itself.
  *
- * `seen` is what makes a hand-edited file safe: a chain that loops — two
- * elements naming each other, which a rename or a copy produces easily — would
- * otherwise be walked forever, inside a render, on a file load.
+ * `seen` is what makes a hand-edited file safe: a structure that loops — two
+ * elements naming each other as parent, which a rename or a copy produces easily —
+ * would otherwise be walked forever, inside a render, on a file load. The store
+ * cuts those on load, but a walk that depended on that would be one refactor away
+ * from hanging on a file somebody edited by hand.
  */
 export function descendantsOf(nodes: readonly MapNode[], id: string): MapNode[] {
-	const byId = indexNodes(nodes);
 	const seen = new Set<string>([id]);
 	const out: MapNode[] = [];
+	const queue: string[] = [id];
 
-	let current = byId.get(id);
-	while (current?.targetMapId) {
-		const next = byId.get(current.targetMapId);
-		if (!next || seen.has(next.id)) break;
-		seen.add(next.id);
-		out.push(next);
-		current = next;
+	for (let head = 0; head < queue.length; head += 1) {
+		for (const child of childrenOf(nodes, queue[head])) {
+			if (seen.has(child.id)) continue;
+			seen.add(child.id);
+			out.push(child);
+			queue.push(child.id);
+		}
 	}
 
 	return out;
 }
 
 /**
- * The roots of the forest: the elements nothing switches to.
+ * The roots of the forest: the elements that are not inside anything.
  *
- * Note the direction — "no node names this one as its target", not "this one
- * names no target". A location at the end of a chain is the second question, and
- * that says nothing about where it is shown.
+ * Note what that means — a node is a root because it has no `parentId`, not
+ * because it names no child of its own. A location at the bottom of a region is
+ * the second question, and saying nothing about where it is shown.
  */
 export function rootNodes(nodes: readonly MapNode[]): MapNode[] {
-	const entered = new Set(nodes.map((node) => node.targetMapId).filter((id): id is string => Boolean(id)));
-	return nodes.filter((node) => !entered.has(node.id));
+	return nodes.filter((node) => node.parentId === undefined);
 }
 
 /**
@@ -287,10 +289,14 @@ export function levelNodes(nodes: readonly MapNode[], stack: readonly string[]):
  *
  * This is the "sun": the characters of a region and of every town under it,
  * gathered in one ring so the writer can see at a glance who is in that part of
- * the world. The first occurrence wins, so a character standing in two towns of
- * the same region is one token, not two — a ring that drew them twice would say
- * they were in two places, which is exactly the sort of thing the map is
- * supposed to prevent.
+ * the world. The zone's own `chars` lead the list, because a character the author
+ * put on the region itself — in it but not in any of its towns — is exactly the
+ * one a sun that only walked downwards would silently drop.
+ *
+ * The first occurrence wins, so a character standing in two towns of the same
+ * region is one token, not two — a ring that drew them twice would say they were
+ * in two places, which is exactly the sort of thing the map is supposed to
+ * prevent.
  *
  * Note what is deliberately not here: no centre is computed, and the node's own
  * `x`/`y` is not used as a fallback. If the writer has not placed the anchor,
@@ -298,16 +304,21 @@ export function levelNodes(nodes: readonly MapNode[], stack: readonly string[]):
  * story that nobody made.
  */
 export function collectCast(nodes: readonly MapNode[], id: string): string[] {
+	const byId = indexNodes(nodes);
 	const seen = new Set<string>();
 	const cast: string[] = [];
 
-	for (const node of descendantsOf(nodes, id)) {
+	const gather = (node: MapNode): void => {
 		for (const token of node.chars) {
 			if (seen.has(token)) continue;
 			seen.add(token);
 			cast.push(token);
 		}
-	}
+	};
+
+	const self = byId.get(id);
+	if (self) gather(self);
+	for (const node of descendantsOf(nodes, id)) gather(node);
 
 	return cast;
 }

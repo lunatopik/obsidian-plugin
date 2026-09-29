@@ -12,6 +12,7 @@ import type {
 	ZonePoint,
 } from "./types";
 import { initialsFromName, PLACEHOLDER_INITIALS } from "./pawns";
+import { isZone } from "./hierarchy";
 import { isManagedPath } from "./notes";
 
 /**
@@ -186,44 +187,80 @@ function parseAnchor(raw: unknown): { x: number; y: number } | undefined {
 }
 
 /**
+ * Move a link written in the old direction onto the child, which is where it lives now.
+ *
+ * A file saved before the direction was inverted stored the edge the other way
+ * round: `targetMapId` on the parent, naming what was inside it. Left alone it
+ * reads as a level with no children at all — the zones would keep their outlines,
+ * but every one of them would be un-enterable, and the writer would watch their
+ * own work come back as doors that open onto nothing. This function is the whole
+ * difference between a migration and a silent loss.
+ *
+ * Only the first claim on a child is honoured. `parentId` is a single value, so a
+ * child that two parents used to name can belong to one of them, and map order is
+ * the only tie-break a reader can predict.
+ */
+function adoptLegacyLinks(nodes: MapNode[], legacy: readonly LegacyLink[]): void {
+	if (legacy.length === 0) return;
+
+	const byId = new Map(nodes.map((node) => [node.id, node]));
+	for (const link of legacy) {
+		const child = byId.get(link.to);
+		if (!child || child.id === link.from || child.parentId !== undefined) continue;
+		child.parentId = link.from;
+	}
+}
+
+/**
  * Cut the links that cannot mean anything, so a map is always a forest.
  *
  * Two ways a hand-edited or imported file gets a link that cannot be walked: the
- * target does not exist (a node was deleted), or the chain loops back on itself
- * (two nodes naming each other, which a rename or a copy can easily produce). A
- * loop is the dangerous one, because every traversal that respects the links
- * would then run forever — inside a render, on a file load. Cutting the edge
- * that closes the loop keeps the rest of the structure and the writer's work.
+ * parent does not exist (a zone was deleted), or the chain loops back on itself
+ * (two elements naming each other as parent, which a rename or a copy can easily
+ * produce). A loop is the dangerous one, because every traversal that respects the
+ * links would then run forever — inside a render, on a file load. Cutting the
+ * edge that closed the loop keeps the rest of the structure and the writer's work.
  */
 function pruneHierarchy(nodes: MapNode[]): void {
 	const byId = new Map(nodes.map((node) => [node.id, node]));
 
 	for (const node of nodes) {
-		if (node.targetMapId && !byId.has(node.targetMapId)) delete node.targetMapId;
+		if (node.parentId && !byId.has(node.parentId)) delete node.parentId;
 	}
 
 	for (const start of nodes) {
+		if (!start.parentId) continue;
 		// `seen` only ever grows and is bounded by the node count, so the walk
 		// terminates whatever the file said.
-		const seen = new Set<string>([start.id]);
-		let current: MapNode | undefined = start;
-		while (current?.targetMapId) {
-			const next = byId.get(current.targetMapId);
-			if (!next) break;
-			if (seen.has(next.id)) {
-				delete current.targetMapId;
+		const seen = new Set<string>();
+		let current: MapNode | undefined = byId.get(start.parentId);
+		while (current) {
+			// Coming back to where the walk began means `start` is inside its own
+			// subtree, and the edge that did it is the one to cut.
+			if (current.id === start.id) {
+				delete start.parentId;
 				break;
 			}
-			seen.add(next.id);
-			current = next;
+			// Any other repeat is a loop that some other node is already inside, and
+			// that node's own pass is what unwinds it.
+			if (seen.has(current.id)) break;
+			seen.add(current.id);
+			current = byId.get(current.parentId ?? "");
 		}
 	}
+}
+
+/** An edge in the direction it used to be stored: parent naming its child. */
+interface LegacyLink {
+	from: string;
+	to: string;
 }
 
 function parseNodes(raw: unknown): MapNode[] {
 	if (!Array.isArray(raw)) return [];
 
 	const nodes: MapNode[] = [];
+	const legacy: LegacyLink[] = [];
 	for (const entry of raw) {
 		const record = asRecord(entry);
 		if (!record) continue;
@@ -253,10 +290,16 @@ function parseNodes(raw: unknown): MapNode[] {
 		const zone = parseZone(record.zone);
 		if (zone) node.zone = zone;
 
-		// A map that switches to itself is a door onto nothing, whatever the file
-		// says. The loop that spans several nodes is cut in `pruneHierarchy`.
-		const target = asString(record.targetMapId);
-		if (target && target !== id) node.targetMapId = target;
+		// A node that names itself as its own parent is a door onto nothing,
+		// whatever the file says. The loop that spans several nodes is cut in
+		// `pruneHierarchy`.
+		const parent = asString(record.parentId);
+		if (parent && parent !== id) node.parentId = parent;
+
+		// The same edge as it was written before the direction was inverted. Kept
+		// only long enough to hand it to `adoptLegacyLinks`, never on the node.
+		const legacyTarget = asString(record.targetMapId);
+		if (legacyTarget && legacyTarget !== id) legacy.push({ from: id, to: legacyTarget });
 
 		const anchor = parseAnchor(record.anchor);
 		if (anchor) node.anchor = anchor;
@@ -267,6 +310,7 @@ function parseNodes(raw: unknown): MapNode[] {
 		nodes.push(node);
 	}
 
+	adoptLegacyLinks(nodes, legacy);
 	pruneHierarchy(nodes);
 	return nodes;
 }
@@ -551,12 +595,13 @@ export function deleteNode(maps: ChapterMaps, path: string, nodeId: string): boo
 	map.nodes = map.nodes.filter((node) => node.id !== nodeId);
 	if (map.nodes.length === before) return false;
 
-	// Anything that was entered through the deleted node is let go rather than
-	// orphaned. A link to a node that no longer exists is a link nobody can walk,
-	// and the things behind it would be on no level at all — invisible but still
-	// in data.json, which is the one kind of lost work this plugin does not do.
+	// Anything that was inside the deleted node is let go rather than orphaned. A
+	// link to a node that no longer exists is a link nobody can walk, and the things
+	// behind it would be on no level at all — invisible but still in data.json,
+	// which is the one kind of lost work this plugin does not do. Letting them go
+	// puts them back on the world level, where the writer can see and collect them.
 	for (const node of map.nodes) {
-		if (node.targetMapId === nodeId) delete node.targetMapId;
+		if (node.parentId === nodeId) delete node.parentId;
 	}
 
 	return true;
@@ -569,7 +614,7 @@ export function deleteNode(maps: ChapterMaps, path: string, nodeId: string): boo
  * sits. Deliberately not a computed middle: the outline is whatever shape was
  * drawn, so anything derived from it would be a place the writer never chose.
  * The zone is born without children and therefore cannot be entered yet — that
- * is what `setZoneTarget` is for, and a door with nothing behind it is better
+ * is what `setNodeParent` is for, and a door with nothing behind it is better
  * than a door that opens onto the world.
  */
 export function addZone(
@@ -593,46 +638,49 @@ export function addZone(
 }
 
 /**
- * Point a zone at the map a click on it falls into.
+ * Put an element inside a zone, or lift it back out to the top level.
  *
- * Refuses a self-reference, a target that is not on this chapter's map, and — the
- * one that would be a genuine trap — a target that is already inside this zone,
- * because that would make the chain a loop the render has to walk.
+ * Refuses a self-reference, a parent that is not on this chapter's map, a parent
+ * that is not a zone — a pin is a place, not a container — and, the one that would
+ * be a genuine trap, a parent that already sits inside this element, because that
+ * would make the chain a loop the render has to walk.
  */
-export function setZoneTarget(maps: ChapterMaps, path: string, nodeId: string, targetId: string | null): boolean {
+export function setNodeParent(maps: ChapterMaps, path: string, nodeId: string, parentId: string | null): boolean {
 	const map = maps[path];
 	const node = map && findNode(map, nodeId);
 	if (!node) return false;
 
-	if (targetId === null || targetId === "") {
-		if (node.targetMapId === undefined) return false;
-		delete node.targetMapId;
+	if (parentId === null || parentId === "") {
+		if (node.parentId === undefined) return false;
+		delete node.parentId;
 		return true;
 	}
 
-	if (targetId === nodeId) return false;
-	if (!findNode(map, targetId)) return false;
-	// The chain runs the way it is walked, so the target is this zone's
-	// descendant. Letting one of them point back would make a loop there is no
-	// end of, and the map would have no top level to come back to.
-	if (isDescendantId(map.nodes, targetId, nodeId)) return false;
+	if (parentId === nodeId) return false;
+	const parent = findNode(map, parentId);
+	if (!parent || !isZone(parent)) return false;
+	// The edge runs upwards, so what has to be checked is whether the prospective
+	// parent is already below this node. Pointing one of its own descendants at it
+	// would make a loop there is no end of, and the map would have no top level to
+	// come back to.
+	if (isAncestorId(map.nodes, nodeId, parentId)) return false;
 
-	if (node.targetMapId === targetId) return false;
-	node.targetMapId = targetId;
+	if (node.parentId === parentId) return false;
+	node.parentId = parentId;
 	return true;
 }
 
-/** Whether `fromId` can be reached by following `targetId`'s chain. */
-function isDescendantId(nodes: readonly MapNode[], targetId: string, fromId: string): boolean {
+/** Whether `ancestorId` is reached by walking up from `descendantId`. */
+function isAncestorId(nodes: readonly MapNode[], ancestorId: string, descendantId: string): boolean {
 	const byId = new Map(nodes.map((node) => [node.id, node]));
 	const seen = new Set<string>();
 
-	let current: MapNode | undefined = byId.get(targetId);
-	while (current?.targetMapId) {
-		if (current.targetMapId === fromId) return true;
+	let current: MapNode | undefined = byId.get(descendantId);
+	while (current?.parentId) {
+		if (current.parentId === ancestorId) return true;
 		if (seen.has(current.id)) return false;
 		seen.add(current.id);
-		current = byId.get(current.targetMapId);
+		current = byId.get(current.parentId);
 	}
 
 	return false;
@@ -657,6 +705,38 @@ export function setNodeAnchor(
 	if (!node) return false;
 
 	node.anchor = { x: Math.round(x), y: Math.round(y) };
+	return true;
+}
+
+/**
+ * Remember the colour a zone fills with on hover, or forget it.
+ *
+ * Absent means the stylesheet's own default, which is why clearing it deletes the
+ * field rather than writing an empty string: a file full of `"fill": ""` is a
+ * file nobody can read.
+ *
+ * Three outcomes, and the middle one matters: `null` (or an empty string) clears
+ * the field and reports the change, a value that is not a colour is refused
+ * outright and leaves what was there alone, and a colour that is already set
+ * reports no change. Conflating a bad value with a clear would let a mistyped
+ * colour erase a good one.
+ */
+export function setZoneFill(maps: ChapterMaps, path: string, nodeId: string, fill: string | null): boolean {
+	const map = maps[path];
+	const node = map && findNode(map, nodeId);
+	if (!node) return false;
+
+	if (fill === null || fill === "") {
+		if (node.fill === undefined) return false;
+		delete node.fill;
+		return true;
+	}
+
+	const cleaned = asColor(fill);
+	if (cleaned === null) return false;
+	if (node.fill === cleaned) return false;
+
+	node.fill = cleaned;
 	return true;
 }
 

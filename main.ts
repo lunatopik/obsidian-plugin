@@ -1,7 +1,6 @@
 import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { MapView, VIEW_TYPE_MAP } from "./src/map-view";
 import { RosterView, VIEW_TYPE_ROSTER } from "./src/roster-view";
-import { RelationshipView, VIEW_TYPE_RELATIONSHIP } from "./src/relationship-view";
 import { WriterStateMapSettingTab } from "./src/settings";
 import { DataStorage, parseSettings } from "./src/storage";
 import { pickFromList, pickNote } from "./src/pickers";
@@ -38,33 +37,38 @@ export default class WriterStateMapPlugin extends Plugin {
 		await this.loadSettings();
 		this.notes = new NoteWriter(this);
 
+		// Exactly two registered tabs, and that is the whole sidebar footprint:
+		// the map, and the roster that opens one click to its right. The chapter
+		// note is an ordinary markdown file in the main area and the relationship
+		// graph is an overlay on the map, so neither needs a tab of its own.
 		this.registerView(VIEW_TYPE_MAP, (leaf) => new MapView(leaf, this));
 		this.registerView(VIEW_TYPE_ROSTER, (leaf) => new RosterView(leaf, this));
-		this.registerView(VIEW_TYPE_RELATIONSHIP, (leaf) => new RelationshipView(leaf, this));
 		this.addSettingTab(new WriterStateMapSettingTab(this.app, this));
 
 		this.addRibbonIcon("map", t(this.settings.language, "viewMap"), () => {
 			void this.openTab("map");
 		});
 		this.addRibbonIcon("file-text", t(this.settings.language, "viewNote"), () => {
-			void this.openTab("note");
+			void this.openNote();
 		});
 
 		this.addCommand({ id: "open-map", name: t(this.settings.language, "commandOpenMap"), callback: () => void this.openTab("map") });
 		this.addCommand({
 			id: "open-note",
 			name: t(this.settings.language, "commandOpenNote"),
-			callback: () => void this.openTab("note"),
+			callback: () => void this.openNote(),
 		});
 		this.addCommand({
 			id: "open-roster",
 			name: t(this.settings.language, "commandOpenRoster"),
 			callback: () => void this.openTab("roster"),
 		});
+		// The graph has no tab any more, so the command opens the map and asks it
+		// for the overlay. The command id is kept: muscle memory outlives layout.
 		this.addCommand({
 			id: "open-relationship",
 			name: t(this.settings.language, "commandOpenRelationship"),
-			callback: () => void this.openTab("relationship"),
+			callback: () => void this.showRelationships(),
 		});
 		this.addCommand({
 			id: "forget-chapter",
@@ -392,15 +396,21 @@ export default class WriterStateMapPlugin extends Plugin {
 		return leaf?.view instanceof RosterView ? leaf.view : null;
 	}
 
-	private relationshipView(): RelationshipView | null {
-		const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_RELATIONSHIP)[0];
-		return leaf?.view instanceof RelationshipView ? leaf.view : null;
-	}
-
 	refreshAllViews(): void {
 		this.mapView()?.refresh();
 		this.rosterView()?.onExternalChange();
-		this.relationshipView()?.onExternalChange();
+	}
+
+	/**
+	 * Show the relationship graph over the map, opening the map first if needed.
+	 *
+	 * The graph lives inside the map now, so there is nothing to open but the map
+	 * itself. Used by both the toolbar button and the command, so neither of them
+	 * has to know that opening the tab is a precondition of seeing the overlay.
+	 */
+	async showRelationships(): Promise<void> {
+		await this.openTab("map");
+		this.mapView()?.openRelationshipOverlay();
 	}
 
 	/**
@@ -415,13 +425,11 @@ export default class WriterStateMapPlugin extends Plugin {
 		const file = this.app.workspace.getActiveFile();
 		const next = file && isChapterFile(file.path) && !isManagedPath(file.path) ? file.path : null;
 		if (next === this.chapterPath) return;
-		const previous = this.chapterPath;
 		this.chapterPath = next;
 
 		this.mapView()?.setChapter(this.chapterPath);
 		this.rosterView()?.onExternalChange();
-		this.relationshipView()?.onExternalChange();
-		if (previous !== this.chapterPath) this.retargetNoteTab();
+		this.retargetNoteTab();
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -491,7 +499,12 @@ export default class WriterStateMapPlugin extends Plugin {
 	}
 
 	/**
-	 * Label the tab the way the plugin wants it, not the way the file name reads.
+	 * Label the tab with the chapter it belongs to, not a generic string.
+	 *
+	 * Every note is called "WSM: Chapter Note", so a writer with two chapters
+	 * open had no way to tell which tab was which — the only clue was which file
+	 * it happened to be, which is the thing the label replaced. The chapter's own
+	 * name goes in, so the tab answers the question it is asked.
 	 *
 	 * There is no API for a tab title, so this goes after the two things
 	 * Obsidian does use: `getDisplayText` is what the tab header asks for, and
@@ -500,7 +513,7 @@ export default class WriterStateMapPlugin extends Plugin {
 	 * one costs a nicer name, nothing more.
 	 */
 	private renameNoteTab(leaf: WorkspaceLeaf): void {
-		const label = this.t("viewNote");
+		const label = this.noteLabel();
 		const view = leaf.view as { getDisplayText?: () => string } | null;
 		try {
 			if (view && typeof view.getDisplayText === "function") {
@@ -517,25 +530,39 @@ export default class WriterStateMapPlugin extends Plugin {
 	}
 
 	/**
-	 * Open a tab in the right sidebar, right next to its sibling.
-	 * Reuses an existing tab of the requested kind instead of duplicating it.
+	 * The note's tab title, named after the chapter.
+	 *
+	 * The file's basename rather than the whole path: the folder a chapter lives
+	 * in says more about the vault's organisation than about the chapter, and a
+	 * title long enough to need an ellipsis has stopped being a title.
 	 */
-	async openTab(which: "map" | "note" | "roster" | "relationship"): Promise<void> {
-		if (which === "note") return this.openNoteTab();
+	private noteLabel(): string {
+		const chapter = this.chapterPath;
+		if (!chapter) return this.t("viewNote");
 
-		const viewType = which === "map" ? VIEW_TYPE_MAP : which === "roster" ? VIEW_TYPE_ROSTER : VIEW_TYPE_RELATIONSHIP;
+		const name = chapter.split("/").pop()?.replace(/\.md$/i, "").trim() ?? "";
+		if (!name) return this.t("viewNote");
+		return this.t("viewNoteFor", { chapter: name });
+	}
+
+	/**
+	 * Open one of the plugin's two tabs in the right sidebar, right next to its
+	 * sibling. Reuses an existing tab of the requested kind instead of
+	 * duplicating it. The chapter note is not here on purpose: it is a file in
+	 * the main area, not a tab, and it goes through `openNote`.
+	 */
+	async openTab(which: "map" | "roster"): Promise<void> {
+		const viewType = which === "map" ? VIEW_TYPE_MAP : VIEW_TYPE_ROSTER;
 		const existing = this.app.workspace.getLeavesOfType(viewType)[0];
 		if (existing) {
 			this.app.workspace.revealLeaf(existing);
 			return;
 		}
 
-		// Append next to whichever sibling already exists, so the three tabs keep
-		// a stable order in the sidebar.
-		const sibling = this.app.workspace.getLeavesOfType(VIEW_TYPE_ROSTER)[0] ?? this.noteLeaf();
-		const leaf = sibling
-			? this.tabBeside(sibling)
-			: this.app.workspace.getRightLeaf(false);
+		// The roster lands to the right of the map when the map is already open,
+		// which is the order the toolbar presents them in.
+		const sibling = which === "roster" ? this.mapViewLeaf() : this.rosterViewLeaf();
+		const leaf = sibling ? this.tabBeside(sibling) : this.app.workspace.getRightLeaf(false);
 		if (!leaf) return;
 
 		await leaf.setViewState({ type: viewType, active: true });
@@ -553,12 +580,17 @@ export default class WriterStateMapPlugin extends Plugin {
 	}
 
 	/**
-	 * Open the note of the active chapter in the sidebar, creating it if needed.
+	 * Open the note of the active chapter as an ordinary file in the main area.
 	 *
-	 * Opening the tab is itself the author's intent, so the note is generated
+	 * Not a sidebar tab, and that is the point: the note is where the prose gets
+	 * written, and prose written in a 300px column is prose nobody finishes. The
+	 * leaf is asked for from the root split rather than from a plugin tab, because
+	 * `getLeaf("tab")` appends to whatever group is active and the map is.
+	 *
+	 * Opening the file is itself the author's intent, so the note is generated
 	 * before the leaf ever shows an empty file.
 	 */
-	private async openNoteTab(): Promise<void> {
+	async openNote(): Promise<void> {
 		const chapter = this.activeChapterPath;
 		if (!chapter) {
 			new Notice(this.t("noticeNoChapter"));
@@ -579,14 +611,25 @@ export default class WriterStateMapPlugin extends Plugin {
 			return;
 		}
 
-		// Prefer sitting next to the map: the note is the map's own text.
-		const anchor = this.mapViewLeaf() ?? this.rosterViewLeaf();
-		const leaf = anchor ? this.tabBeside(anchor) : this.app.workspace.getRightLeaf(false);
+		const leaf = this.tabInMainArea();
 		if (!leaf) return;
 
 		await leaf.setViewState({ type: "markdown", state: { file: target }, active: true });
 		this.renameNoteTab(leaf);
 		this.app.workspace.revealLeaf(leaf);
+	}
+
+	/**
+	 * A new tab in the main working area, never in the sidebar.
+	 *
+	 * `rootSplit` is passed explicitly because the argument-less form also searches
+	 * pop-out windows, and a note that opens in a detached window is a note the
+	 * writer has to hunt for.
+	 */
+	private tabInMainArea(): WorkspaceLeaf | null {
+		const anchor = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit);
+		if (!anchor) return this.app.workspace.getLeaf("tab");
+		return this.tabBeside(anchor);
 	}
 
 	private mapViewLeaf(): WorkspaceLeaf | null {
@@ -600,7 +643,6 @@ export default class WriterStateMapPlugin extends Plugin {
 	/** True for the plugin's own leaves, so the map does not clear on focus. */
 	private isOurLeaf(leaf: WorkspaceLeaf): boolean {
 		if (leaf.view instanceof MapView || leaf.view instanceof RosterView) return true;
-		if (leaf.view instanceof RelationshipView) return true;
 		if (leaf.getViewState().type !== "markdown") return false;
 		const file = (leaf.getViewState().state as { file?: string } | undefined)?.file;
 		return typeof file === "string" && isManagedPath(file);

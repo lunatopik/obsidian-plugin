@@ -38,14 +38,12 @@ export class WriterStateMapSettingTab extends PluginSettingTab {
 			.addDropdown((dropdown) =>
 				dropdown
 					.addOption("map", this.plugin.t("settingsDefaultViewMap"))
-					.addOption("note", this.plugin.t("settingsDefaultViewNote"))
-		.addOption("roster", this.plugin.t("settingsDefaultViewRoster"))
-			.addOption("relationship", this.plugin.t("settingsDefaultViewRelationship"))
-			.setValue(this.plugin.settings.defaultView)
-				.onChange(async (value) => {
-					this.plugin.settings.defaultView = value as "map" | "note" | "roster" | "relationship";
-					this.plugin.requestSave();
-				}),
+					.addOption("roster", this.plugin.t("settingsDefaultViewRoster"))
+					.setValue(this.plugin.settings.defaultView)
+					.onChange(async (value) => {
+						this.plugin.settings.defaultView = value as "map" | "roster";
+						this.plugin.requestSave();
+					}),
 			);
 
 		new Setting(containerEl)

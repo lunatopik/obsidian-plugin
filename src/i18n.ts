@@ -12,6 +12,7 @@ const en = {
 	viewRoster: "Characters",
 	viewRelationship: "Relationships",
 	viewNote: "WSM: Chapter Note",
+	viewNoteFor: "WSM: Note — {{chapter}}",
 
 	/* ---- the relationships tab ---- */
 
@@ -30,8 +31,7 @@ const en = {
 	relCancel: "Cancel",
 	noticeLinkAdded: "{a} and {b}: {kind}",
 	noticeLinkKept: "That tie was already there, with another kind. It was replaced.",
-	commandOpenRelationship: "Open relationships tab",
-	settingsDefaultViewRelationship: "Relationships",
+	commandOpenRelationship: "Show relationships over the map",
 
 	emptyNoFileTitle: "No chapter open",
 	emptyNoFileHint: "Open a markdown note and its map is drawn from this plugin's data.",
@@ -46,6 +46,20 @@ const en = {
 	mapSetBackground: "Set background",
 	mapChangeBackground: "Change background",
 	mapClearBackground: "Remove background",
+
+	mapLevelWorld: "World",
+	mapDrawZone: "Draw zone",
+	mapDrawZoneHint: "Click the map to place corners. Click the first one to close, Esc to cancel.",
+	mapPlaceAnchor: "Place anchor",
+	mapPlaceAnchorHint: "Click inside a zone to mark where its cast is drawn around.",
+	mapBack: "Back",
+	mapEnterZone: "Go in",
+	mapSunOverflow: "{count} more inside — click to go in",
+	noticeZoneSelfCross: "This outline crosses itself, so it has no single inside. Redraw it.",
+	noticeAnchorNeedsZone: "An anchor goes on a zone, not on a location.",
+	popoverZoneFill: "Colour on hover",
+	popoverZoneRedraw: "Redraw the outline",
+	popoverZoneEmpty: "Nothing inside yet. Click the zone to go in, then double-click to add.",
 
 	mapInheritFrom: "Inherit from",
 	mapInheritSummary: "Locations {nodes}, characters {pawns}",
@@ -112,7 +126,6 @@ const en = {
 	settingsOpenRosterDesc: "Manage characters next to the map instead of in this dialog.",
 	settingsDefaultView: "Tab to focus",
 	settingsDefaultViewMap: "Map",
-	settingsDefaultViewNote: "Note",
 	settingsDefaultViewRoster: "Roster",
 	settingsDefaultCanvas: "Default canvas size",
 	settingsDefaultCanvasHint: "Used when a map has no own size and no background image.",
@@ -188,6 +201,7 @@ const ru: Record<TranslationKey, string> = {
 	viewRoster: "Персонажи",
 	viewRelationship: "Связи",
 	viewNote: "WSM: Записка Главы",
+	viewNoteFor: "WSM: Записка — {{chapter}}",
 
 	/* ---- вкладка связей ---- */
 
@@ -206,8 +220,7 @@ const ru: Record<TranslationKey, string> = {
 	relCancel: "Отмена",
 	noticeLinkAdded: "{a} и {b}: {kind}",
 	noticeLinkKept: "Такая связь уже была другого рода. Она заменена.",
-	commandOpenRelationship: "Открыть вкладку связей",
-	settingsDefaultViewRelationship: "Связи",
+	commandOpenRelationship: "Показать связи поверх карты",
 
 	emptyNoFileTitle: "Глава не открыта",
 	emptyNoFileHint: "Откройте markdown-файл — его карта берётся из data.json плагина.",
@@ -222,6 +235,20 @@ const ru: Record<TranslationKey, string> = {
 	mapSetBackground: "Задать фон",
 	mapChangeBackground: "Сменить фон",
 	mapClearBackground: "Убрать фон",
+
+	mapLevelWorld: "Мир",
+	mapDrawZone: "Нарисовать зону",
+	mapDrawZoneHint: "Кликайте по карте, чтобы ставить углы. Клик по первому замкнёт контур, Esc отменит.",
+	mapPlaceAnchor: "Поставить якорь",
+	mapPlaceAnchorHint: "Кликните внутри зоны, чтобы отметить, вокруг чего соберётся состав.",
+	mapBack: "Назад",
+	mapEnterZone: "Провалиться",
+	mapSunOverflow: "Ещё {count} внутри — провалиться",
+	noticeZoneSelfCross: "Контур самопересекается, то есть у него нет единой внутренности. Нарисуйте заново.",
+	noticeAnchorNeedsZone: "Якорь ставится на зону, а не на локацию.",
+	popoverZoneFill: "Цвет при наведении",
+	popoverZoneRedraw: "Перерисовать контур",
+	popoverZoneEmpty: "Внутри пока пусто. Кликните по зоне, чтобы провалиться, и дважды кликните, чтобы добавить.",
 
 	mapInheritFrom: "Наследовать от",
 	mapInheritSummary: "Локаций {nodes}, персонажей {pawns}",
@@ -288,7 +315,6 @@ const ru: Record<TranslationKey, string> = {
 	settingsOpenRosterDesc: "Управляйте персонажами рядом с картой, а не в этом окне.",
 	settingsDefaultView: "Вкладка по умолчанию",
 	settingsDefaultViewMap: "Карта",
-	settingsDefaultViewNote: "Записка",
 	settingsDefaultViewRoster: "Персонажи",
 	settingsDefaultCanvas: "Размер холста по умолчанию",
 	settingsDefaultCanvasHint: "Используется, если у карты нет своего размера и нет фоновой картинки.",

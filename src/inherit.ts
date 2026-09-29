@@ -115,9 +115,15 @@ function cloneNode(node: MapNode): MapNode {
 	// would open onto an empty level. The anchor goes with it for the same
 	// reason: it is the author's own placement, and re-deriving it is exactly the
 	// centroid this plugin refuses to compute.
+	//
+	// `parentId` comes across too, and it is the one field that is safe to copy
+	// even though it points outside the copy: an inherited map is a copy of the
+	// whole structure, and the ids it names are among the elements it brought
+	// with it. A zone whose children stayed behind would come back as a door onto
+	// nothing.
 	if (node.kind !== undefined) copy.kind = node.kind;
 	if (node.zone) copy.zone = node.zone.map((corner) => ({ x: corner.x, y: corner.y }));
-	if (node.targetMapId !== undefined) copy.targetMapId = node.targetMapId;
+	if (node.parentId !== undefined) copy.parentId = node.parentId;
 	if (node.anchor) copy.anchor = { x: node.anchor.x, y: node.anchor.y };
 	if (node.fill !== undefined) copy.fill = node.fill;
 

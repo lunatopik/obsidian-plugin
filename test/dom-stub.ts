@@ -288,16 +288,45 @@ export class FakeElement {
 		if (index >= 0) list.splice(index, 1);
 	}
 
-	/** Dispatch a synthetic event, the way a user interaction would. */
+	/**
+	 * Dispatch a synthetic event the way a user interaction would: from this
+	 * element up through its ancestors, and no further.
+	 *
+	 * Bubbling is not optional detail. The map's stage delegates its clicks and
+	 * hovers so that a zone outline painted under the pins, and a sun drawn on top
+	 * of it, can both be caught by one listener on the stage itself. A stub that
+	 * only ever called the listeners on the element it fired at would make that
+	 * delegation untestable, and the alternative — moving the listener down to the
+	 * nodes layer — is exactly the layout the SVG outline rules out.
+	 *
+	 * `stopPropagation` is honoured for the same reason: a pin's own handlers call
+	 * it precisely so the stage does not also treat the click as "go into a zone",
+	 * and a stub that ignored it would let a pin's click open a region behind the
+	 * popover.
+	 *
+	 * `target` stays the element the event started on, as in the DOM — bubbling
+	 * does not retarget.
+	 */
 	fire(type: string, event: FakeEvent = {}): void {
+		const origin = event.target ?? this;
+		let stopped = false;
+		const onEventStop = event.stopPropagation;
 		const payload: FakeEvent = {
 			preventDefault: () => undefined,
-			stopPropagation: () => undefined,
 			...event,
 			type,
-			target: event.target ?? this,
+			target: origin,
+			stopPropagation: () => {
+				stopped = true;
+				onEventStop?.();
+			},
 		};
-		for (const listener of [...(this.listeners[type] ?? [])]) listener(payload);
+
+		let node: FakeElement | null = this;
+		while (node && !stopped) {
+			for (const listener of [...(node.listeners[type] ?? [])]) listener(payload);
+			node = node.parent;
+		}
 	}
 
 	/* ------------------------------ geometry ---------------------------- */
@@ -390,10 +419,34 @@ export function installDom(): void {
 	 */
 	scope.Element = FakeElement;
 	scope.window = { addEventListener: (): void => undefined, removeEventListener: (): void => undefined };
+	/**
+	 * The document really does collect its listeners here.
+	 *
+	 * A no-op stub looked fine until the map wired Escape to the document rather
+	 * than to its own pane: every Escape test kept passing because it was firing at
+	 * an element nobody listened on, so a handler that had never run was being
+	 * read as a handler that worked. Recording them makes `pressKey` in the suite
+	 * able to reach the real thing.
+	 */
 	scope.document = {
-		addEventListener: (): void => undefined,
-		removeEventListener: (): void => undefined,
+		listeners: {} as Record<string, Listener[]>,
+		addEventListener(type: string, listener: Listener): void {
+			(this.listeners[type] ??= []).push(listener);
+		},
+		removeEventListener(type: string, listener: Listener): void {
+			const list = this.listeners[type];
+			if (!list) return;
+			const index = list.indexOf(listener);
+			if (index >= 0) list.splice(index, 1);
+		},
 		createElement: (tag: string): FakeElement => createElement(tag),
 		createElementNS: (namespace: string, tag: string): FakeElement => createElementNS(namespace, tag),
 	};
+}
+
+/** Fire a key on the document, the way a real key press arrives. */
+export function pressKey(key: string): void {
+	const doc = (globalThis as unknown as { document: { listeners: Record<string, Listener[]> } }).document;
+	const event = { key, stopPropagation: (): void => undefined, preventDefault: (): void => undefined };
+	for (const listener of [...(doc.listeners["keydown"] ?? [])]) listener(event);
 }

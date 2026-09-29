@@ -26,14 +26,18 @@ const BACKUP_INTERVAL_MS = 60_000;
 export type ImportMode = "replace" | "merge";
 
 /**
- * Every view that can be the one the plugin opens on its own.
+ * Every registered tab the plugin can be the one to open.
  *
  * Spelled out as a list rather than tested against "roster" and defaulting to
  * "map": a check written that way silently rewrites every new view to the map,
- * so a data.json that asked for the relationships tab would come back showing
- * the map instead, with nothing to indicate why.
+ * so a data.json that asked for the roster tab would come back showing the map
+ * instead, with nothing to indicate why.
+ *
+ * The chapter note and the relationship graph are not in the list because they
+ * are not tabs. A file that names either falls back to the map, which is the
+ * honest answer: there is no such tab to open.
  */
-const DEFAULT_VIEWS = ["map", "note", "roster", "relationship"] as const;
+const DEFAULT_VIEWS = ["map", "roster"] as const;
 
 function asDefaultView(value: unknown): WriterStateMapSettings["defaultView"] {
 	return DEFAULT_VIEWS.includes(value as (typeof DEFAULT_VIEWS)[number])

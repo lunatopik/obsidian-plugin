@@ -1,5 +1,6 @@
-import type { Pawn, StoredChapterMap } from "./types";
+import type { MapNode, Pawn, StoredChapterMap } from "./types";
 import { indexPawns, resolveToken } from "./pawns";
+import { childrenOf, collectCast, isZone } from "./hierarchy";
 
 /**
  * The author's notes, kept next to the map in a dot-folder of the vault.
@@ -109,8 +110,8 @@ export function wikiLink(name: string): string {
 }
 
 /** Locations sorted by label for a stable file; unnamed ones go last. */
-function sortedNodes(map: StoredChapterMap): StoredChapterMap["nodes"] {
-	return [...map.nodes].sort((a, b) => {
+function sortedNodes(nodes: readonly MapNode[]): MapNode[] {
+	return [...nodes].sort((a, b) => {
 		const left = (a.label ?? "").trim();
 		const right = (b.label ?? "").trim();
 		if (!left && !right) return a.id.localeCompare(b.id);
@@ -124,9 +125,24 @@ function sortedNodes(map: StoredChapterMap): StoredChapterMap["nodes"] {
 /**
  * Build the generated block, markers included.
  *
- * The placement section lists every location with its characters as wikilinks;
- * the off-story section lists roster members that appear in no location of this
- * chapter, and is omitted when there are none.
+ * The map is a tree — a region holds towns, a town holds districts — and this
+ * reads it as one, because a flat list of every node made the digest contradict
+ * the map it was summarising: a character standing in a town was listed against
+ * the town while the region above it read as empty. A zone now prints everyone
+ * under it, recursively, and nests what it contains.
+ *
+ * A zone's line is its whole cast, so a reader can stop at the level they care
+ * about; a plain location's line is only its own characters, because "the people
+ * here" means exactly that and nothing more.
+ *
+ * Every node is printed exactly once, whatever shape the file is in. That is not
+ * defensive padding: a location whose `parentId` names a node that is not there
+ * is invisible to a walk from the roots, and dropping it would put a place the
+ * writer drew silently out of the digest. A cycle in a hand-edited file would
+ * hang the walk instead, so anything the walk does not reach is printed at the
+ * top level on the way out.
+ *
+ * The off-story pool is everyone in the roster who appears nowhere in the chapter.
  */
 export function buildNoteBlock(map: StoredChapterMap, pawns: Pawn[], s: NoteStrings): string {
 	const index = indexPawns(pawns);
@@ -135,18 +151,27 @@ export function buildNoteBlock(map: StoredChapterMap, pawns: Pawn[], s: NoteStri
 	if (map.nodes.length === 0) {
 		lines.push(s.noLocations);
 	} else {
-		for (const node of sortedNodes(map)) {
-			const label = node.label?.trim() || s.unnamedLocation;
-			// Char order is the writer's own (the order they ticked the boxes).
-			const names = node.chars
-				.map((token) => resolveToken(token, index, pawns).pawn)
-				.filter((pawn): pawn is Pawn => pawn !== null)
-				.map((pawn) => wikiLink(pawn.name));
-			lines.push(
-				names.length > 0
-					? `- **${label}**: ${names.join(", ")}`
-					: `- **${label}**: ${s.emptyLocation}`,
-			);
+		const known = new Set(map.nodes.map((node) => node.id));
+		// Marks a node as printed, and is what stops a cycle from recursing
+		// forever. A root is a node with no parent, plus a node whose parent is
+		// not in this file: as far as the digest is concerned it has nowhere to
+		// hang, so it gets the top level rather than vanishing.
+		const seen = new Set<string>();
+		const describe = (node: MapNode, depth: number): string[] => {
+			if (seen.has(node.id)) return [];
+			seen.add(node.id);
+			return describeNode(map.nodes, node, depth, index, s, describe);
+		};
+
+		for (const node of sortedNodes(map.nodes)) {
+			if (node.parentId === undefined || !known.has(node.parentId)) {
+				lines.push(...describe(node, 0));
+			}
+		}
+		// Whatever is left is in a cycle, or is a child of a node already printed
+		// under another parent. Both have to appear once rather than not at all.
+		for (const node of sortedNodes(map.nodes)) {
+			if (!seen.has(node.id)) lines.push(...describe(node, 0));
 		}
 	}
 
@@ -168,6 +193,38 @@ export function buildNoteBlock(map: StoredChapterMap, pawns: Pawn[], s: NoteStri
 
 	lines.push(NOTE_END);
 	return lines.join("\n");
+}
+
+/**
+ * Markdown lines for one node and, indented under it, everything it contains.
+ *
+ * The `describe` callback rather than a direct self-call, because the closure in
+ * `buildNoteBlock` owns the "printed once" bookkeeping that a cycle needs.
+ */
+function describeNode(
+	nodes: readonly MapNode[],
+	node: MapNode,
+	depth: number,
+	index: Map<string, Pawn>,
+	s: NoteStrings,
+	describe: (node: MapNode, depth: number) => string[],
+): string[] {
+	// A zone speaks for its whole subtree; a location speaks only for itself.
+	const tokens = isZone(node) ? collectCast(nodes, node.id) : node.chars;
+	const names = tokens
+		.map((token) => index.get(token)?.name)
+		.filter((name): name is string => name !== undefined)
+		.map((name) => wikiLink(name));
+
+	// Char order is the writer's own (the order they ticked the boxes).
+	const indent = "  ".repeat(depth);
+	const label = node.label?.trim() || s.unnamedLocation;
+	const lines = [`${indent}- **${label}**: ${names.length > 0 ? names.join(", ") : s.emptyLocation}`];
+
+	for (const child of sortedNodes(childrenOf(nodes, node.id))) {
+		lines.push(...describe(child, depth + 1));
+	}
+	return lines;
 }
 
 /** File text for a note that does not exist yet: the block plus a free zone. */
@@ -216,14 +273,19 @@ export function mergeNote(existing: string | null, block: string, s: NoteStrings
 }
 
 /**
- * Fingerprint of everything the note actually shows: labels, characters and
- * names. Coordinates are deliberately excluded, so dragging a node — or an
- * avatar around its pin — produces the same signature and skips the write.
+ * Fingerprint of everything the note actually shows: the shape of the tree, the
+ * labels, the characters and the names.
+ *
+ * `parentId` is in here because the digest nests by it — moving a town into a
+ * region changes the file, and a signature blind to that would leave the old
+ * nesting in place with no error. Coordinates are deliberately excluded, so
+ * dragging a node — or an avatar around its pin — produces the same signature
+ * and skips the write.
  */
 export function contentSignature(map: StoredChapterMap, pawns: Pawn[]): string {
 	const nodes = [...map.nodes]
 		.sort((a, b) => a.id.localeCompare(b.id))
-		.map((node) => [node.id, node.label ?? "", [...node.chars]]);
+		.map((node) => [node.id, node.parentId ?? "", node.label ?? "", [...node.chars]]);
 	const roster = pawns
 		.map((pawn) => [pawn.id, pawn.name])
 		.sort((a, b) => a[0].localeCompare(b[0]));
