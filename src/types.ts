@@ -4,17 +4,17 @@
  * Data flow overview:
  *   data.json (pawns + maps)  <->  store.ts   <->  map-view.ts / roster-view.ts
  *   data.json (bytes)         <->  storage.ts <->  main.ts
- *   map + roster              <->  notes.ts   <->  note-writer.ts -> .Writer Maps Data/
+ *   map + roster              <->  notes.ts   <->  note-writer.ts -> Writer Maps Notes/
  *
  * Isolation rule: the plugin never reads the author's chapter notes and never
  * writes to one. A chapter contributes nothing but its path, which is the key
  * under `maps`.
  *
- * The one deliberate exception is the author's own note, kept in the hidden
- * ".Writer Maps Data/" folder and written only between two marker comments by
- * src/note-writer.ts — the single audited module allowed to reach a vault file.
- * Everything the author writes outside those markers is never read, rewritten or
- * removed.
+ * The one deliberate exception is the author's own note, kept in the visible
+ * "Writer Maps Notes/" folder and written only between two marker comments by
+ * src/note-writer.ts — the single audited module allowed to write a markdown
+ * file. Everything the author writes outside those markers is never read,
+ * rewritten or removed.
  */
 
 /** Supported interface languages. */

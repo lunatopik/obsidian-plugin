@@ -1,5 +1,4 @@
-import { Notice } from "obsidian";
-import type { DataAdapter, ListedFiles } from "obsidian";
+import { Notice, TFile } from "obsidian";
 import type WriterStateMapPlugin from "../main";
 import type { NoteStrings } from "./notes";
 import {
@@ -7,6 +6,7 @@ import {
 	chapterForNotePath,
 	contentSignature,
 	EXPORT_ROOT,
+	exportTextFor,
 	isManagedPath,
 	isNotePath,
 	mergeNote,
@@ -26,17 +26,24 @@ export interface ExportPreview {
 }
 
 /**
- * The only module in the plugin allowed to touch a vault file.
+ * The only module in the plugin allowed to touch a markdown file.
  *
- * Two markdown roots are ours and only ours: the hidden note folder and the
- * visible export folder. Every single read and write below goes through
- * isManagedPath() first, so a bug upstream cannot turn into "the plugin
- * overwrote my manuscript", and a chapter note can never become a write target
- * even by accident.
+ * Two markdown roots are ours and only ours: the notes folder and the export
+ * folder. Every single read and write below goes through isManagedPath() first,
+ * so a bug upstream cannot turn into "the plugin overwrote my manuscript", and a
+ * chapter note can never become a write target even by accident.
  *
- * The test suite enforces both halves: no other source may mention the vault
- * adapter at all, and this module may not use the high-level vault or
- * file-manager APIs that would let it reach a chapter.
+ * It goes through `vault.create` / `vault.modify` / `vault.read` and not through
+ * `vault.adapter`. The adapter is the low-level escape hatch that can write any
+ * path in the vault with no bookkeeping: a write through it updates the file on
+ * disk without Obsidian knowing, so a note open in an editor keeps serving a
+ * buffer that no longer matches what is there, and every later edit of the map
+ * is made against a fiction. The high-level API fires the events that keep the
+ * workspace honest, and it is the one that knows what a TFile is.
+ *
+ * The test suite enforces this: no source may hold the vault adapter except
+ * storage.ts, which owns data.json, and no source may call these three APIs
+ * except this one.
  *
  * The other job here is not fighting the author. A note is usually open in the
  * real editor, so a write is deferred while that editor holds unsaved changes and
@@ -103,8 +110,29 @@ export class NoteWriter {
 		};
 	}
 
-	private adapter(): DataAdapter {
-		return this.plugin.app.vault.adapter;
+	private vault() {
+		return this.plugin.app.vault;
+	}
+
+	/** The markdown file at a path, or null when there is none. */
+	private fileAt(path: string): TFile | null {
+		const found = this.vault().getAbstractFileByPath(path);
+		// `instanceof TFile` and not "not a folder": a path can hold a folder of
+		// the same name, and `modify` on one of those is a throw, not a no-op.
+		return found instanceof TFile ? found : null;
+	}
+
+	/**
+	 * Every markdown file under a folder, by prefix.
+	 *
+	 * `getMarkdownFiles()` rather than a walk of the adapter: it is one call, it
+	 * is the list Obsidian itself works from, and it cannot disagree with it.
+	 */
+	private listMarkdown(root: string): string[] {
+		return this.vault()
+			.getMarkdownFiles()
+			.map((file) => file.path)
+			.filter((path) => path.startsWith(root));
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -157,12 +185,12 @@ export class NoteWriter {
 			const target = notePathFor(chapterPath);
 			if (!isManagedPath(target) || isNotePath(chapterPath)) return false;
 			try {
-				if (await this.adapter().exists(target)) return false;
+				if (this.fileAt(target)) return false;
 				const s = this.strings();
 				const empty = buildNoteBlock({ map_bg: null, nodes: [] }, [], s);
+				const created = newNote(empty);
 				await this.ensureFolder(noteFolderFor(chapterPath));
-				const created = newNote(empty, s);
-				await this.adapter().write(target, created);
+				await this.vault().create(target, created);
 				// Remembered, because an editor may already be holding a buffer for
 				// this path from before the file existed.
 				this.rememberWritten(target, created);
@@ -198,8 +226,9 @@ export class NoteWriter {
 		if (!force && this.signatures.get(chapterPath) === signature) return false;
 
 		try {
-			const existing = await this.diskText(target);
-			await this.ensureFolder(noteFolderFor(chapterPath));
+			const file = this.fileAt(target);
+			const existing = file ? await this.vault().read(file) : null;
+			if (file) await this.ensureFolder(noteFolderFor(chapterPath));
 
 			// The note is usually open in the sidebar editor. Writing over a buffer
 			// the author has not saved yet would throw their text away, so the
@@ -230,7 +259,7 @@ export class NoteWriter {
 			}
 
 			const s = this.strings();
-			const merged = mergeNote(existing, buildNoteBlock(map, this.plugin.settings.pawns, s), s);
+			const merged = mergeNote(existing, buildNoteBlock(map, this.plugin.settings.pawns, s));
 			if (!merged.ok) {
 				new Notice(this.plugin.t("noticeNoteUnbalanced", { path: target }));
 				return false;
@@ -241,9 +270,15 @@ export class NoteWriter {
 				return false;
 			}
 
+			// Prepending puts our callout above a title the author wrote. That is
+			// the only non-destructive option, but it is not a silent one: they get
+			// told, because the alternative they would otherwise see is a file that
+			// no longer opens the way they left it.
+			if (merged.prepended) new Notice(this.plugin.t("noticeNotePrepended", { path: target }));
+
 			this.selfWrites.set(target, merged.text);
 			this.rememberWritten(target, merged.text);
-			await this.adapter().write(target, merged.text);
+			await this.writeFile(target, file, merged.text);
 			this.signatures.set(chapterPath, signature);
 			return true;
 		} catch (error) {
@@ -271,31 +306,60 @@ export class NoteWriter {
 	/** What is on disk for one of our paths, or null when there is no file. */
 	async diskText(path: string): Promise<string | null> {
 		if (!isManagedPath(path)) return null;
+		const file = this.fileAt(path);
+		if (!file) return null;
 		try {
-			return (await this.adapter().exists(path)) ? await this.adapter().read(path) : null;
+			return await this.vault().read(file);
 		} catch {
 			return null;
 		}
 	}
 
 	/**
+	 * Put text at a managed path: modify what is there, create what is not.
+	 *
+	 * The file argument is the one this write already resolved, rather than
+	 * looking it up again — `write` has just read it, and a second lookup could
+	 * only return something different if the file had moved underneath us, which
+	 * `create` would then refuse anyway.
+	 */
+	private async writeFile(path: string, file: TFile | null, text: string): Promise<void> {
+		if (file) {
+			await this.vault().modify(file, text);
+			return;
+		}
+		// A folder is sitting where the note belongs. `create` is not the answer:
+		// it either replaces the folder with a file or fails halfway through
+		// having done so, and either way the author's folder is gone. Refusing is
+		// the only move that leaves something of theirs intact.
+		if (this.vault().getAbstractFileByPath(path)) {
+			throw new Error(`cannot create the note: ${path} is a folder`);
+		}
+		await this.ensureFolder(path.slice(0, path.lastIndexOf("/")));
+		await this.vault().create(path, text);
+	}
+
+	/**
 	 * Create every missing folder of a path, segment by segment.
 	 *
-	 * Obsidian's adapter has no recursive mkdir, and a mirrored note can sit
-	 * several folders deep the first time it is written.
+	 * There is no recursive mkdir in the vault API either, and a mirrored note can
+	 * sit several folders deep the first time it is written. Each segment is asked
+	 * about by path rather than kept in a list of what we created, so a folder the
+	 * author created themselves between two writes is found rather than
+	 * duplicated.
 	 */
 	private async ensureFolder(path: string): Promise<void> {
-		const adapter = this.adapter();
+		const vault = this.vault();
 		let current = "";
 		for (const segment of path.split("/").filter(Boolean)) {
 			current = current ? `${current}/${segment}` : segment;
-			if (await adapter.exists(current)) continue;
+			if (vault.getAbstractFileByPath(current)) continue;
 			try {
-				await adapter.mkdir(current);
+				await vault.createFolder(current);
 			} catch {
-				// A concurrent write created it first, or the adapter rejects a
-				// duplicate; either way the next exists() check settles it.
-				if (!(await adapter.exists(current))) throw new Error(`cannot create folder ${current}`);
+				// A concurrent write created it first, or the API rejects a
+				// duplicate; either way the next lookup settles it.
+				if (!vault.getAbstractFileByPath(current)) throw new Error(`cannot create folder ${current}`);
 			}
 		}
 	}
@@ -356,68 +420,49 @@ export class NoteWriter {
 
 	/** What an export would do, so the caller can ask before touching anything. */
 	async previewExport(): Promise<ExportPreview> {
-		const files = await this.listMarkdown(`${NOTE_ROOT}/`);
-		return { files, hasContent: files.length > 0 && (await this.hasAnyMarkdown(`${EXPORT_ROOT}/`)) };
+		const files = this.listMarkdown(`${NOTE_ROOT}/`);
+		return { files, hasContent: files.length > 0 && this.listMarkdown(`${EXPORT_ROOT}/`).length > 0 };
 	}
 
 	/**
-	 * Copy every note into the visible export folder, mirroring the structure.
+	 * Copy every note into the export folder, mirroring the structure.
 	 *
-	 * The dot keeps the working notes out of the writer's sight; this is the
-	 * deliberate way to get them out where any other app can reach them.
+	 * The copy is not a copy. The callout exists for the note, where the plugin
+	 * owns the block and the author needs to see it as one thing; in a file that
+	 * has left the vault there is no plugin left to update it, and a reader in
+	 * another app sees quote marks and a `[!info]` that renders as nothing. So the
+	 * block goes out as plain markdown, and the author's own text — the free zone,
+	 * the draft, whatever it is — is carried over exactly as written. Anything
+	 * less than that would be exporting our scaffolding and calling it their file.
 	 */
 	async exportAll(): Promise<number> {
-		const adapter = this.adapter();
 		const source = `${NOTE_ROOT}/`;
-		const files = await this.listMarkdown(source);
+		const files = this.listMarkdown(source);
+		const s = this.strings();
 		let copied = 0;
 
-		for (const file of files) {
-			const relative = file.slice(source.length);
+		for (const path of files) {
+			const relative = path.slice(source.length);
 			const target = `${EXPORT_ROOT}/${relative}`;
 			// Same gate as every other write: the export folder is ours, and
 			// nothing outside it may be reached even by a hand-edited path.
 			if (!isManagedPath(target)) continue;
-			await this.ensureFolder(target.slice(0, target.lastIndexOf("/")));
 
-			const text = await adapter.read(file);
+			const from = this.fileAt(path);
+			if (!from) continue;
+
 			try {
-				this.selfWrites.set(target, text);
-				await adapter.write(target, text);
+				const text = exportTextFor(await this.vault().read(from), s);
+				await this.writeFile(target, this.fileAt(target), text);
 			} catch (error) {
 				// A half-finished export is still usable, and the next run will
 				// pick the file up again; failing the whole export over one
 				// unreadable note would be worse than skipping it.
-				this.selfWrites.delete(target);
 				console.error("Writer's State Map: note export failed", target, error);
 				continue;
 			}
 			copied += 1;
 		}
 		return copied;
-	}
-
-	/** Every markdown file under a folder, depth first, vault paths. */
-	private async listMarkdown(root: string): Promise<string[]> {
-		const found: string[] = [];
-		const walk = async (folder: string): Promise<void> => {
-			let listing: ListedFiles;
-			try {
-				listing = await this.adapter().list(folder);
-			} catch {
-				// The folder does not exist yet: nothing to copy.
-				return;
-			}
-			for (const file of listing.files) {
-				if (file.toLowerCase().endsWith(".md")) found.push(file);
-			}
-			for (const sub of listing.folders) await walk(sub);
-		};
-		await walk(root);
-		return found;
-	}
-
-	private async hasAnyMarkdown(root: string): Promise<boolean> {
-		return (await this.listMarkdown(root)).length > 0;
 	}
 }

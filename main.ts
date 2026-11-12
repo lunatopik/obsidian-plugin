@@ -20,8 +20,8 @@ import { TranslationKey, t } from "./src/i18n";
  * contributes nothing but its vault-relative path, which is the key under
  * `settings.maps`.
  *
- * The single deliberate exception is the author's own note, kept in the hidden
- * ".Writer Maps Data/" folder and written only between two marker comments by
+ * The single deliberate exception is the author's own note, kept in the visible
+ * "Writer Maps Notes/" folder and written only between two marker comments by
  * src/note-writer.ts. See src/notes.ts for the rules.
  */
 export default class WriterStateMapPlugin extends Plugin {
@@ -418,7 +418,7 @@ export default class WriterStateMapPlugin extends Plugin {
 	 *
 	 * The plugin's own folders are excluded twice over: isChapterFile() already
 	 * rejects them, and the explicit check keeps the reason visible — a note in
-	 * ".Writer Maps Data/" is the digest of a chapter, so treating it as a chapter
+	 * "Writer Maps Notes/" is the digest of a chapter, so treating it as a chapter
 	 * would give the digest a map, whose digest would then have one too, forever.
 	 */
 	private syncChapter(): void {

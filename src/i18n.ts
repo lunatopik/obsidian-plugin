@@ -139,11 +139,11 @@ const en = {
 	settingsRestoreBackup: "Restore backup",
 	settingsExportNotes: "Export notes",
 	settingsExportNotesDesc:
-		"Copy every note from the hidden .Writer Maps Data/ folder into Writer Maps Export/, where the file tree and any other app can see it.",
+		"Copy every note from the Writer Maps Notes/ folder into Writer Maps Export/, stripping the generated block down to plain markdown.",
 	settingsExportNotesButton: "Export notes to a visible folder",
 	settingsCleanupOrphans: "Orphaned maps",
 	settingsPrivacy:
-		"Everything lives in this plugin's data.json. The plugin never reads your notes and never writes to a chapter note. The only files it writes are your own notes in the hidden .Writer Maps Data/ folder, and only between its marker comments.",
+		"Everything lives in this plugin's data.json. The plugin never writes to a chapter note. The only markdown it writes is your own notes in the Writer Maps Notes/ folder, and only between its marker comments.",
 
 	noticeSaveFailed: "Could not save the plugin data: {message}",
 	noticeViewFailed: "The map panel hit an error: {message}",
@@ -163,6 +163,8 @@ const en = {
 	noticeNoteUpdated: "Note updated: {path}",
 	noticeNoteFailed: "Could not update the note at {path}: {message}",
 	noticeNoteUnbalanced: "The note markers in {path} are unbalanced — the file was left untouched.",
+	noticeNotePrepended:
+		"The block was added to the top of {path}. Check the beginning of the file, so the text below it reads the way you meant.",
 	noticeNoteExported: "Exported {count} notes to {path}/",
 	noticeNoteExportEmpty: "There are no notes to export yet",
 
@@ -182,16 +184,17 @@ const en = {
 	unknownPawnTitle: "Unknown",
 
 	/* ---------------------------------------------------------------------
-	   The author's note — the generated block between the two marker
-	   comments. Everything below is theirs alone.
+	   The author's note — a callout block between the two HTML markers. The
+	   markers sit outside the callout so Live Preview can hide them, and
+	   everything after the closing marker is theirs alone.
 	   --------------------------------------------------------------------- */
-	notePlacementTitle: "### 📍 Character placement in this chapter:",
-	noteOffStoryTitle: "### ⚠️ Off story (left in the pool):",
+	notePlacementTitle: "Map placement",
+	noteOffStoryTitle: "⚠️ Off story (left in the pool):",
 	noteEmptyLocation: "*Empty location*",
 	noteNoLocations: "*This chapter has no locations yet*",
 	noteUnnamedLocation: "Unnamed location",
 	noteFreeZone:
-		"Everything below this line is your own space. The plugin never reads, changes or erases what you write under %% wsm-summary-end %%.",
+		"Everything under this line is your own space. The plugin never reads, changes or erases a word of it.",
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -328,11 +331,11 @@ const ru: Record<TranslationKey, string> = {
 	settingsRestoreBackup: "Восстановить из бэкапа",
 	settingsExportNotes: "Записки",
 	settingsExportNotesDesc:
-		"Скопировать все записки из скрытой папки .Writer Maps Data/ в папку Writer Maps Export/, где их увидят дерево файлов и любые другие программы.",
+		"Скопировать все записки из папки Writer Maps Notes/ в папку Writer Maps Export/, превратив сгенерированный блок в обычный markdown.",
 	settingsExportNotesButton: "Выгрузить записки в видимую папку",
 	settingsCleanupOrphans: "Осиротевшие карты",
 	settingsPrivacy:
-		"Всё хранится в data.json этого плагина. Текст ваших заметок плагин никогда не читает и не изменяет. Единственные файлы, которые он пишет, — ваши записки в скрытой папке .Writer Maps Data/, и только между её маркерами.",
+		"Всё хранится в data.json этого плагина. В заметки глав плагин никогда не пишет. Единственный markdown, который он создаёт, — ваши записки в папке Writer Maps Notes/, и только между маркерами.",
 
 	noticeSaveFailed: "Не удалось сохранить данные плагина: {message}",
 	noticeViewFailed: "Ошибка в панели карты: {message}",
@@ -352,6 +355,8 @@ const ru: Record<TranslationKey, string> = {
 	noticeNoteUpdated: "Записка обновлена: {path}",
 	noticeNoteFailed: "Не удалось обновить записку {path}: {message}",
 	noticeNoteUnbalanced: "Маркеры записки в {path} непарные — файл оставлен без изменений.",
+	noticeNotePrepended:
+		"Блок добавлен в начало {path}. Проверьте начало файла, чтобы текст под ним читался так, как вы задумали.",
 	noticeNoteExported: "Выгружено записей: {count} в {path}/",
 	noticeNoteExportEmpty: "Записок для выгрузки пока нет",
 
@@ -371,16 +376,17 @@ const ru: Record<TranslationKey, string> = {
 	unknownPawnTitle: "Неизвестная",
 
 	/* ---------------------------------------------------------------------
-	   Записка главы — генерируемый блок между двумя маркерами. Всё, что
-	   ниже, принадлежит автору.
+	   Записка главы — блок между двумя HTML-маркерами, оформленный как
+	   callout [!info]. Всё, что ниже закрывающего маркера, принадлежит
+	   автору и плагином не читается.
 	   --------------------------------------------------------------------- */
-	notePlacementTitle: "### 📍 Размещение персонажей в этой главе:",
-	noteOffStoryTitle: "### ⚠️ Вне сюжета (остались в пуле):",
+	notePlacementTitle: "Дислокация на карте",
+	noteOffStoryTitle: "⚠️ Вне сюжета (остались в пуле):",
 	noteEmptyLocation: "*Локация пуста*",
 	noteNoLocations: "*В этой главе пока нет локаций*",
 	noteUnnamedLocation: "Без названия",
 	noteFreeZone:
-		"Здесь идет свободная зона автора. Всё, что написано ниже тега %% wsm-summary-end %%, плагин НИКОГДА не читает, не изменяет и не затирает.",
+		"Здесь начинается свободная зона автора, которую плагин никогда не читает, не меняет и не затирает.",
 };
 
 const dictionaries: Record<Language, Record<TranslationKey, string>> = { en, ru };

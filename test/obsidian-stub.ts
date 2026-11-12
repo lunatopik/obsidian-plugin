@@ -4,7 +4,8 @@
  * touch is implemented.
  *
  * There is deliberately no `fileManager` here: the plugin must not be able to
- * write to a note, and the test suite should not be able to either.
+ * reach a chapter note through it, and the test suite should not be able to
+ * either. The vault keeps only what the plugin is allowed to use.
  */
 import { createElement } from "./dom-stub.ts";
 import type { FakeElement } from "./dom-stub.ts";
@@ -38,6 +39,19 @@ export class App {
 	adapterFolders: Record<string, string[]> = {};
 	/** Every path handed to `adapter.write`, in order, so tests can count writes. */
 	adapterWrites: string[] = [];
+	/**
+	 * Markdown files reached through the vault API, path -> text.
+	 *
+	 * Separate from `adapterFiles` on purpose. The plugin writes its notes with
+	 * `vault.create`/`vault.modify` and keeps data.json on the adapter, and a stub
+	 * that merged the two would let a test pass while the plugin reached for the
+	 * wrong one — which is the whole distinction these tests exist to police.
+	 */
+	vaultFiles: Record<string, string> = {};
+	/** Every path handed to `vault.create`, in order. */
+	vaultCreated: string[] = [];
+	/** Every path handed to `vault.modify`, in order. */
+	vaultModified: string[] = [];
 	/** Every `vault.on` callback, so a test can deliver a real save event. */
 	vaultListeners: ((file: TFile) => void)[] = [];
 	/** Every `openLinkText` call, newest last. */
@@ -67,7 +81,7 @@ export class App {
 			 *
 			 * Two details are load-bearing, and a stub that gets either one wrong
 			 * fails in a way the test cannot explain. First, the queried path is
-			 * normalised to end in a slash: against ".Writer Maps Data/Книга" the
+			 * normalised to end in a slash: against "Writer Maps Notes/Книга" the
 			 * nested folder's remainder is "/Часть 2", which contains a slash, so
 			 * the nesting is never discovered. Second, the match is strictly
 			 * below — a bare `startsWith` also accepts the folder itself, since
@@ -86,14 +100,44 @@ export class App {
 				};
 			},
 		},
-		getAbstractFileByPath: (): unknown => null,
+		/**
+		 * The high-level file API, which is the only way the note writer is allowed
+		 * to touch markdown.
+		 *
+		 * `getAbstractFileByPath` answers for both files and folders, exactly as
+		 * the real one does, so a test that creates a folder where a file should go
+		 * sees the same `instanceof TFile === false` the plugin does.
+		 */
+		getAbstractFileByPath: (path: string): unknown => {
+			if (path in this.vaultFiles) return new TFile(path);
+			if (path in this.vaultFolders) return Object.assign(new TFolder(), { path });
+			return null;
+		},
+		getMarkdownFiles: (): TFile[] => Object.keys(this.vaultFiles).map((path) => new TFile(path)),
 		getFiles: (): unknown[] => [],
 		getResourcePath: (file: TFile): string => `app://local/${file.path}`,
+		read: async (file: TFile): Promise<string> => this.vaultFiles[file.path] ?? "",
+		create: async (path: string, data: string): Promise<TFile> => {
+			this.vaultFiles[path] = data;
+			this.vaultCreated.push(path);
+			return new TFile(path);
+		},
+		modify: async (file: TFile, data: string): Promise<void> => {
+			this.vaultFiles[file.path] = data;
+			this.vaultModified.push(file.path);
+		},
+		createFolder: async (path: string): Promise<TFolder> => {
+			this.vaultFolders[path] = true;
+			return Object.assign(new TFolder(), { path });
+		},
 		on: (_name: string, callback: (file: TFile) => void) => {
 			this.vaultListeners.push(callback);
 			return { unsubscribe: () => undefined };
 		},
 	};
+
+	/** Folders created through the vault API, so a test can count them. */
+	vaultFolders: Record<string, boolean> = {};
 
 	workspace = {
 		getLeavesOfType: (type: string): WorkspaceLeaf[] =>
@@ -143,7 +187,12 @@ export class App {
 	saveEditor(path: string): void {
 		const buffer = this.openEditorBuffers[path];
 		if (buffer === undefined) return;
-		this.adapterFiles[path] = buffer;
+		// Through the vault store, not the adapter: markdown the plugin wrote went
+		// in through `vault.create`, so a save landing in `adapterFiles` would put
+		// the file in two places at once and every read-after-save would disagree
+		// with the next write.
+		this.vaultFiles[path] = buffer;
+		this.vaultModified.push(path);
 		delete this.openEditorBuffers[path];
 		this.fireVault("modify", { path } as TFile);
 	}

@@ -82,7 +82,7 @@ function asColor(value: unknown): string | null {
 /**
  * Only markdown notes can host a map.
  *
- * The plugin's own folders are excluded: a note in ".Writer Maps Data/" is the
+ * The plugin's own folders are excluded: a note in "Writer Maps Notes/" is the
  * digest of a chapter, and a copy in "Writer Maps Export/" is a copy. Treating
  * either as a chapter would give the digest a map, whose digest would then have
  * a map of its own, forever.

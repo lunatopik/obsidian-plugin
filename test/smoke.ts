@@ -65,17 +65,19 @@ import {
 	chapterForNotePath,
 	contentSignature,
 	EXPORT_ROOT,
+	exportTextFor,
 	isExportPath,
 	isManagedPath,
 	isNotePath,
 	mergeNote,
 	newNote,
+	NOTE_BLOCK_RE,
 	NOTE_END,
 	NOTE_ROOT,
 	NOTE_START,
 	noteFolderFor,
 	notePathFor,
-	wikiLink,
+	stripBrackets,
 } from "../src/notes.ts";
 import type { NoteStrings } from "../src/notes.ts";
 import { NoteWriter } from "../src/note-writer.ts";
@@ -471,7 +473,7 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 	// inherited from, and a non-markdown path is not a chapter at all.
 	const polluted = normalizeMap({
 		nodes: [],
-		parent_chapter_id: ".Writer Maps Data/Book/Chapter 1.md",
+		parent_chapter_id: "Writer Maps Notes/Book/Chapter 1.md",
 	});
 	assert.equal("parent_chapter_id" in polluted, false, "a parent inside the generated notes folder is refused");
 
@@ -705,7 +707,7 @@ assert.equal(removeMap({}, CHAPTER), false, "removing a missing map is a no-op")
 	// one of its own, forever.
 	const store: ChapterMaps = {
 		"Глава 1.md": { map_bg: null, nodes: [] },
-		[".Writer Maps Data/Глава 1.md"]: { map_bg: null, nodes: [] },
+		["Writer Maps Notes/Глава 1.md"]: { map_bg: null, nodes: [] },
 	};
 	assert.deepEqual(
 		parentCandidates(store, "Глава 9.md"),
@@ -1582,12 +1584,19 @@ const code = (relative: string): string =>
 		.replace(/^[ \t]*\/\/.*$/gm, "");
 
 /**
- * Two modules may hold the vault adapter, each for a different and narrow reason:
+ * Two modules touch the filesystem, and neither of them shares an API with the
+ * other any more:
  *
- * - storage.ts owns this plugin's own data.json, backup and export copy;
- * - note-writer.ts owns the author's notes, gated on isManagedPath().
+ * - storage.ts owns this plugin's own data.json and goes through the adapter,
+ *   which writes with no bookkeeping and no events — tolerable for a private file
+ *   the plugin owns outright;
+ * - note-writer.ts owns the author's notes and goes through `vault.create` /
+ *   `modify` / `read`, because a note is usually open in an editor and a write
+ *   the editor does not hear about leaves the writer looking at a fiction. It
+ *   gates every path on isManagedPath() first.
  *
- * Nothing else may reach for it, and storage.ts must never be pointed at a note.
+ * Nothing else may reach for either, and storage.ts must never be pointed at a
+ * note.
  */
 const WRITER = "../src/note-writer.ts";
 const DATA_STORE = "../src/storage.ts";
@@ -1626,12 +1635,40 @@ for (const source of sources) {
 		`${source} must not read a note's frontmatter`,
 	);
 
-	// `vault.adapter` is the low-level escape hatch: it can write any path at
-	// all. Only the two audited modules above may hold it.
+	// Two escape hatches, two owners, and they no longer overlap.
+	//
+	// `vault.adapter` writes any path in the vault with no bookkeeping: the file
+	// changes on disk and Obsidian is never told, so an editor keeps serving a
+	// buffer that no longer matches what is there. That is tolerable for one
+	// private JSON file the plugin owns outright, and it is not tolerable for a
+	// note the author is probably reading. So the adapter now belongs to
+	// storage.ts alone, and the writer goes through `vault.create` / `modify` /
+	// `read`, which is also where `TFile` comes from.
 	if (source === WRITER) {
 		assert.ok(
 			text.includes("isManagedPath"),
 			"src/note-writer.ts must gate its writes on isManagedPath()",
+		);
+		assert.equal(
+			/vault\.adapter|\badapter\s*\./.test(text),
+			false,
+			"src/note-writer.ts must not touch the vault adapter: a write through it bypasses the editor",
+		);
+		// And it must actually use the high-level API, rather than satisfying the
+		// check above by simply not writing anything. Matched on the call name:
+		// `ensureFolder` holds the vault in a local, so demanding `.vault().`
+		// would be a test of one line's spelling.
+		for (const call of ["create", "modify", "read"]) {
+			assert.ok(
+				new RegExp(`\\b${call}\\s*\\(`).test(text),
+				`src/note-writer.ts must reach the vault API for ${call}()`,
+			);
+		}
+		// A path can hold a folder, and `modify` on one of those throws halfway
+		// through the write.
+		assert.ok(
+			text.includes("instanceof TFile"),
+			"src/note-writer.ts must check a resolved path with instanceof TFile before modifying it",
 		);
 	} else if (source === DATA_STORE) {
 		assert.equal(
@@ -1643,8 +1680,23 @@ for (const source of sources) {
 		assert.equal(
 			/vault\.adapter|\badapter\s*\./.test(text),
 			false,
-			`${source} must not touch the vault adapter: only storage.ts and note-writer.ts may`,
+			`${source} must not touch the vault adapter: only storage.ts may`,
 		);
+	}
+
+	// The high-level file API is the other half of the same rule. Only the writer
+	// may write markdown, so only it may call these three — in particular
+	// `vault.create`, which has no path gate in front of it: it will happily
+	// create a file anywhere in the vault, and there is nothing in Obsidian
+	// stopping it from landing on top of the author's chapter.
+	if (source !== WRITER) {
+		for (const call of ["create", "modify", "createFolder"]) {
+			assert.equal(
+				new RegExp(`\\bvault\\s*\\.\\s*${call}\\s*\\(|\\.vault\\s*\\.\\s*${call}\\s*\\(`).test(text),
+				false,
+				`${source} must not call vault.${call}(): only note-writer.ts may write into the vault`,
+			);
+		}
 	}
 }
 
@@ -1742,17 +1794,25 @@ for (const source of sources) {
 			false,
 			"the built main.js must not contain processFrontMatter",
 		);
+		// The adapter is now storage.ts alone. If the writer ever reached back for
+		// it, the counts would differ — and the difference is a write the editor
+		// never hears about, which is the failure this whole rule exists to stop.
 		const inBundle = (text.match(/\.adapter\b/g) ?? []).length;
-		const inAudited = [WRITER, DATA_STORE].reduce(
-			(total, source) => total + (code(source).match(/\.adapter\b/g) ?? []).length,
-			0,
-		);
-		assert.ok(inAudited > 0, "the audited writers are expected to use the adapter");
-		assert.equal(
-			inBundle,
-			inAudited,
-			"the built main.js must use the vault adapter exactly as often as storage.ts + note-writer.ts do",
-		);
+		const inAudited = (code(DATA_STORE).match(/\.adapter\b/g) ?? []).length;
+		assert.ok(inAudited > 0, "storage.ts is expected to use the adapter for data.json");
+		assert.equal(inBundle, inAudited, "the built main.js must use the vault adapter exactly as often as storage.ts does");
+
+		// And the writer still reaches the high-level API in the source, so the
+		// rule above is describing the code and not just the comments. Matched on
+		// the call name alone: `ensureFolder` holds the vault in a local, so a
+		// regex demanding `.vault().` would be a test of one line's spelling.
+		const writerSource = code(WRITER);
+		for (const call of ["create", "modify", "createFolder", "read"]) {
+			assert.ok(
+				new RegExp(`\\b${call}\\(`).test(writerSource),
+				`note-writer.ts is expected to reach the vault API for ${call}()`,
+			);
+		}
 	}
 }
 
@@ -3102,29 +3162,29 @@ const liran = { id: "liran", name: "Лиран", initials: "Л", color: "#3cb8a0
 const mother = { id: "pmk", name: "Приемная Мать Кая", initials: "ПМ", color: "#7b6bd9" };
 
 {
-	// The whole point of the hidden folder: the path is mirrored, not renamed.
-	// Renaming would break wikilinks from other notes and make the export guess.
-	assert.equal(NOTE_ROOT, ".Writer Maps Data", "notes live in a dot-folder inside the vault");
-	assert.equal(EXPORT_ROOT, "Writer Maps Export", "the export copy is a visible folder");
+	// The path is mirrored, not renamed. Renaming would break wikilinks from other
+	// notes and make the export guess.
+	assert.equal(NOTE_ROOT, "Writer Maps Notes", "notes live in a visible folder the writer can browse");
+	assert.equal(EXPORT_ROOT, "Writer Maps Export", "the export copy is a visible folder too");
 	assert.equal(
 		notePathFor("Кровь и Искра/Восстание Искры.md"),
-		".Writer Maps Data/Кровь и Искра/Восстание Искры.md",
+		"Writer Maps Notes/Кровь и Искра/Восстание Искры.md",
 		"a nested chapter keeps its folder and filename verbatim",
 	);
 	assert.equal(
 		notePathFor("Глава 1.md"),
-		".Writer Maps Data/Глава 1.md",
-		"a chapter at the vault root still lands inside the dot-folder",
+		"Writer Maps Notes/Глава 1.md",
+		"a chapter at the vault root still lands inside the notes folder",
 	);
 	assert.equal(notePathFor(""), "", "an empty path yields no target");
 	assert.equal(
 		noteFolderFor("Кровь и Искра/Восстание Искры.md"),
-		".Writer Maps Data/Кровь и Искра",
-		"the folder is the chapter's own folder, for the recursive mkdir",
+		"Writer Maps Notes/Кровь и Искра",
+		"the folder is the chapter's own folder, for the recursive createFolder",
 	);
 	assert.equal(noteFolderFor("Глава 1.md"), NOTE_ROOT, "a root chapter needs only the root folder");
 	assert.equal(
-		chapterForNotePath(".Writer Maps Data/Кровь и Искра/Восстание Искры.md"),
+		chapterForNotePath("Writer Maps Notes/Кровь и Искра/Восстание Искры.md"),
 		"Кровь и Искра/Восстание Искры.md",
 		"the mirror is reversible, so the note tab can be mapped back to its chapter",
 	);
@@ -3143,23 +3203,27 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 {
 	// The managed-path gate is the only thing standing between the writer and
 	// the author's own vault, so every shape it must refuse is spelled out.
-	assert.equal(isManagedPath(".Writer Maps Data/Глава.md"), true, "a note is ours");
+	assert.equal(isManagedPath("Writer Maps Notes/Глава.md"), true, "a note is ours");
 	assert.equal(isManagedPath("Writer Maps Export/Глава.md"), true, "an exported note is ours");
 	assert.equal(isManagedPath("Глава.md"), false, "an ordinary chapter is not");
-	assert.equal(isManagedPath(".Writer Maps Data"), false, "the folder itself is not a note");
-	assert.equal(isManagedPath(".Writer Maps Data/"), false, "a trailing slash is not a note");
-	assert.equal(isManagedPath("Writer Maps Data/Глава.md"), false, "a near-miss folder name is not ours");
+	assert.equal(isManagedPath("Writer Maps Notes"), false, "the folder itself is not a note");
+	assert.equal(isManagedPath("Writer Maps Notes/"), false, "a trailing slash is not a note");
+	assert.equal(isManagedPath("Writer Maps Note/Глава.md"), false, "a near-miss folder name is not ours");
+	assert.equal(isManagedPath("Writer Maps Notess/Глава.md"), false, "and neither is a longer one");
 	assert.equal(isManagedPath("Writer Maps Export"), false, "the export folder itself is not a note");
-	assert.equal(isManagedPath(".Writer Maps Data/notes.txt"), false, "only markdown is a note");
-	assert.equal(isNotePath(".Writer Maps Data/Глава.md"), true, "a note is recognized by itself");
+	assert.equal(isManagedPath("Writer Maps Notes/notes.txt"), false, "only markdown is a note");
+	assert.equal(isNotePath("Writer Maps Notes/Глава.md"), true, "a note is recognized by itself");
 	assert.equal(isNotePath("Writer Maps Export/Глава.md"), false, "an export copy is not a note");
 	assert.equal(isExportPath("Writer Maps Export/Глава.md"), true, "an export copy is recognized by itself");
 }
 
 {
-	assert.equal(wikiLink("Кай"), "[[Кай]]", "a name becomes a wikilink");
-	assert.equal(wikiLink("Кай  \n Литл"), "[[Кай Литл]]", "newlines cannot break the line structure");
-	assert.equal(wikiLink("Кай|Джон"), "[[Кай\\|Джон]]", "a pipe cannot turn into an alias");
+	// Names are plain text inside the callout, so the only thing to get right is
+	// that a bracket cannot start a link and swallow the rest of the line.
+	assert.equal(stripBrackets("[[Кай]]"), "Кай", "the wikilink form comes out as a plain name");
+	assert.equal(stripBrackets("Кай[старший]"), "Кайстарший", "a stray bracket cannot open a link");
+	assert.equal(stripBrackets("Кай|Джон"), "Кай|Джон", "a pipe is left alone: it only means an alias inside brackets");
+	assert.equal(stripBrackets("Лиран"), "Лиран", "an ordinary name is untouched");
 }
 
 {
@@ -3177,17 +3241,42 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	assert.equal(
 		block,
 		[
-			"%% wsm-summary-start %%",
-			"### 📍 Размещение персонажей в этой главе:",
-			"- **Академия Магов**: *Локация пуста*",
-			"- **Деревня Яна**: [[Ян]], [[Кай]], [[Лиран]]",
-			"",
-			"### ⚠️ Вне сюжета (остались в пуле):",
-			"- [[Приемная Мать Кая]]",
-			"%% wsm-summary-end %%",
+			NOTE_START,
+			"> [!info] Дислокация на карте",
+			"> - **Академия Магов:** *Локация пуста*",
+			"> - **Деревня Яна:** Ян, Кай, Лиран",
+			">",
+			"> ⚠️ Вне сюжета (остались в пуле):",
+			"> - Приемная Мать Кая",
+			">",
+			`> *${RU.freeZone}*`,
+			NOTE_END,
 		].join("\n"),
 		"the generated block matches the agreed format",
 	);
+
+	// The things a callout quietly does that a plain list did not: the markers
+	// have to sit outside it, and nothing inside may be able to break out.
+	assert.equal(block.startsWith(`${NOTE_START}\n> `), true, "the callout is the whole span between the markers");
+	assert.equal(block.endsWith(NOTE_END), true, "and the closing marker is the last line");
+	// Every line but the two markers is a quote. A single unquoted line would
+	// end the callout and turn the rest of the digest into the author's text.
+	assert.equal(
+		block
+			.split("\n")
+			.filter((line) => line !== "" && !line.startsWith(">") && !line.startsWith("<!--"))
+			.length,
+		0,
+		"no line escapes the callout except the two markers",
+	);
+	assert.equal(
+		block.split("\n").filter((line) => line.startsWith("<!--")).length,
+		2,
+		"and the markers are the only comment lines in the file",
+	);
+	assert.equal(block.includes("[["), false, "no wikilink: inside a callout it renders unresolved or eats the cursor");
+	assert.equal(/<\/?(font|span)\b/i.test(block), false, "no inline HTML, which Obsidian strips or mangles");
+	assert.equal(block.includes("<font"), false, "and none by another name either");
 
 	// No off-story members: the section would be noise.
 	const tight = buildNoteBlock(
@@ -3196,7 +3285,7 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		RU,
 	);
 	assert.equal(tight.includes("Вне сюжета"), false, "an empty off-story pool is omitted");
-	assert.equal(tight.includes("- **Яна**: [[Ян]]"), true, "a filled location lists its characters");
+	assert.equal(tight.includes("> - **Яна:** Ян"), true, "a filled location lists its characters");
 
 	// A chapter with no locations at all.
 	const bare = buildNoteBlock({ map_bg: null, nodes: [] }, [yana], RU);
@@ -3208,7 +3297,7 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		[],
 		RU,
 	);
-	assert.equal(unnamed.includes(`- **${RU.unnamedLocation}**`), true, "an unnamed location falls back to a label");
+	assert.equal(unnamed.includes(`> - **${RU.unnamedLocation}:**`), true, "an unnamed location falls back to a label");
 
 	// A token pointing at a deleted pawn has no name to link.
 	const stale = buildNoteBlock(
@@ -3217,6 +3306,41 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		RU,
 	);
 	assert.equal(stale.includes("ghost"), false, "a token with no roster entry is skipped");
+
+	// A name the author wrote with brackets in it. Inside a callout a `[` is how
+	// markdown reads "a link starts here", and it would swallow the rest of the
+	// line — so the name has to be printed safe rather than printed raw.
+	const bracketed = buildNoteBlock(
+		{ map_bg: null, nodes: [{ id: "n1", label: "Лес[[древня]]", x: 0, y: 0, chars: ["yan"] }] },
+		[yana],
+		RU,
+	);
+	assert.equal(bracketed.includes("> - **Лесдревня:** Ян"), true, "brackets are stripped from a location label");
+	const bracketedPawn = buildNoteBlock(
+		{ map_bg: null, nodes: [{ id: "n1", label: "Лес", x: 0, y: 0, chars: [] }] },
+		[{ ...yana, name: "Ян[старший]" }],
+		RU,
+	);
+	assert.equal(
+		buildNoteBlock(
+			{ map_bg: null, nodes: [{ id: "n1", label: "Лес", x: 0, y: 0, chars: ["yan"] }] },
+			[{ ...yana, name: "Ян[старший]" }],
+			RU,
+		).includes("> - **Лес:** Янстарший"),
+		true,
+		"and from a character name",
+	);
+	// The only bracket left anywhere is the callout's own `[!info]`. A `[` in
+	// anything the plugin prints would be how markdown reads "a link starts
+	// here", and it would swallow the rest of the line.
+	assert.equal(
+		bracketedPawn
+			.split("\n")
+			.filter((line) => line.includes("[") && !line.startsWith("> [!"))
+			.length,
+		0,
+		"no bracket survives into the file apart from the callout header",
+	);
 }
 
 {
@@ -3249,17 +3373,20 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		],
 	};
 
+	const zoneHeader = ["> [!info] Дислокация на карте"];
 	assert.equal(
 		buildNoteBlock(nested, [yana, kai, liran], RU),
 		[
-			"%% wsm-summary-start %%",
-			"### 📍 Размещение персонажей в этой главе:",
+			NOTE_START,
+			...zoneHeader,
 			// The zone's line is its whole cast, so a reader can stop at the region.
-			"- **Гавань**: [[Ян]], [[Кай]]",
-			"  - **Причал**: [[Ян]]",
-			"  - **Харчевня**: [[Кай]]",
-			"- **Дорога**: [[Лиран]]",
-			"%% wsm-summary-end %%",
+			"> - **Гавань:** Ян, Кай",
+			">   - **Причал:** Ян",
+			">   - **Харчевня:** Кай",
+			"> - **Дорога:** Лиран",
+			">",
+			`> *${RU.freeZone}*`,
+			NOTE_END,
 		].join("\n"),
 		"a zone nests what it contains and speaks for the whole subtree",
 	);
@@ -3287,7 +3414,7 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	};
 	const once = buildNoteBlock(shared, [yana], RU);
 	assert.equal(
-		once.split("[[Ян]]").length - 1,
+		once.split("Ян").length - 1,
 		2,
 		"a character in a zone and in its town appears once per line that mentions them",
 	);
@@ -3329,12 +3456,14 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	assert.equal(
 		buildNoteBlock(deep, [yana], RU),
 		[
-			"%% wsm-summary-start %%",
-			"### 📍 Размещение персонажей в этой главе:",
-			"- **Область**: [[Ян]]",
-			"  - **Город**: [[Ян]]",
-			"    - **Улица**: [[Ян]]",
-			"%% wsm-summary-end %%",
+			NOTE_START,
+			"> [!info] Дислокация на карте",
+			"> - **Область:** Ян",
+			">   - **Город:** Ян",
+			">     - **Улица:** Ян",
+			">",
+			`> *${RU.freeZone}*`,
+			NOTE_END,
 		].join("\n"),
 		"nesting goes all the way down, two spaces per level",
 	);
@@ -3348,7 +3477,7 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		RU,
 	);
 	assert.equal(
-		location.includes("- **Причал**: [[Ян]]"),
+		location.includes("> - **Причал:** Ян"),
 		true,
 		"a plain location lists exactly its own characters",
 	);
@@ -3361,7 +3490,7 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		nodes: [{ id: "orphan", label: "Потерянка", x: 0, y: 0, chars: ["yan"], parentId: "deleted" }],
 	};
 	assert.equal(
-		buildNoteBlock(orphaned, [yana], RU).includes("- **Потерянка**: [[Ян]]"),
+		buildNoteBlock(orphaned, [yana], RU).includes("> - **Потерянка:** Ян"),
 		true,
 		"a location whose parent is missing is listed at the top rather than dropped",
 	);
@@ -3383,7 +3512,12 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		2,
 		"a parent cycle still lists every location once instead of hanging or printing nothing",
 	);
-	assert.equal(loopedBlock.includes("Б"), true, "and both are really in there");
+	// A and B are in each other, so there is no root to walk from. One of them
+	// becomes the root and the other is printed beneath it — which is the whole
+	// point: the tree is broken, and the digest has to be readable anyway rather
+	// than lose a place the writer drew.
+	assert.equal(loopedBlock.includes("> - **А:** Ян"), true, "one of the pair is printed at the top");
+	assert.equal(loopedBlock.includes(">   - **Б:** Кай"), true, "and the other is printed under it");
 }
 
 {
@@ -3434,12 +3568,16 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	);
 
 	// 1. The file does not exist yet.
-	const created = mergeNote(null, block, RU);
+	const created = mergeNote(null, block);
 	assert.equal(created.ok, true, "a missing file is created");
 	assert.equal(created.ok && created.text.startsWith(NOTE_START), true, "the new file opens with the block");
 	assert.equal(created.ok && created.text.includes(RU.freeZone), true, "a new file gets a free zone");
+	// The flag is optional and absent rather than `false`: "not prepended" is the
+	// only meaning it has, so there is nothing to set and a falsy check is enough
+	// at the call site.
+	assert.equal(created.ok && created.prepended, undefined, "and it is not a prepend: there was nothing there");
 	assert.equal(
-		created.ok && created.text === newNote(block, RU),
+		created.ok && created.text === newNote(block),
 		true,
 		"newNote and a null merge agree: the two ways of making a file cannot drift",
 	);
@@ -3451,38 +3589,164 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		"Мои заметки до слота.",
 		"",
 		NOTE_START,
-		"старый слот",
+		"> [!info] Дислокация на карте",
+		"> - **Старое место:** Кто-то",
 		NOTE_END,
 		"",
 		"Свободная зона автора. Не трогать!",
 	].join("\n");
-	const updated = mergeNote(handWritten, block, RU);
+	const updated = mergeNote(handWritten, block);
 	assert.equal(updated.ok, true, "an existing slot is rewritten");
 	if (updated.ok) {
 		assert.equal(updated.changed, true, "replacing old content reports a change");
 		assert.equal(updated.text.includes("Мои заметки до слота."), true, "text above the slot survives");
 		assert.equal(updated.text.includes("Свободная зона автора. Не трогать!"), true, "text below the slot survives");
-		assert.equal(updated.text.includes("старый слот"), false, "the old generated block is gone");
+		assert.equal(updated.text.includes("Старое место"), false, "the old generated block is gone");
+		assert.equal(updated.text.includes("**Яна:** Ян"), true, "and the new one is in its place");
+		// The author's zone is below the closing marker, so the reminder inside the
+		// block never lands next to it and starts looking like their own line.
+		assert.equal(
+			updated.text.indexOf("Не трогать") > updated.text.lastIndexOf(NOTE_END),
+			true,
+			"the author's text stays below the closing marker",
+		);
+		assert.equal(updated.prepended, undefined, "a slot that was already there is not a prepend");
 	}
 
 	// 3. Idempotency: writing the same state again must not change a byte.
-	const again = mergeNote(updated.ok ? updated.text : "", block, RU);
+	const again = mergeNote(updated.ok ? updated.text : "", block);
 	assert.equal(again.ok && again.changed, false, "regenerating unchanged data is a no-op");
 
 	// 4. No markers: prepend, never destroy a file we did not create.
 	const foreign = "# Чужой файл\n\nМой текст.";
-	const prepended = mergeNote(foreign, block, RU);
+	const prepended = mergeNote(foreign, block);
 	assert.equal(prepended.ok, true, "a file without markers is accepted");
 	if (prepended.ok) {
 		assert.equal(prepended.text.includes("Мой текст."), true, "a foreign file keeps all of its text");
 		assert.equal(prepended.text.startsWith(NOTE_START), true, "the block is prepended");
+		assert.equal(prepended.text.endsWith("Мой текст."), true, "with the author's text still at the end");
+		// The caller shows a Notice off this flag, because putting a callout above
+		// a title the author wrote is the one case where we changed their file in
+		// a way they did not ask for.
+		assert.equal(prepended.prepended, true, "and the caller is told, so it can say so");
 	}
 
+	// 4b. An empty file is not a file anyone wrote in. Prepending is harmless
+	// there, but it is still not what happened, so the flag stays off.
+	const emptyFile = mergeNote("   \n\n", block);
+	assert.equal(emptyFile.ok && emptyFile.prepended, undefined, "a blank file is filled, not reported as prepended");
+	assert.equal(
+		emptyFile.ok && emptyFile.text === `${block}\n`,
+		true,
+		"and it is filled the way a new file is",
+	);
+
 	// 5. Unbalanced markers: refuse rather than guess.
-	const broken = `${NOTE_START}\nслот без конца`;
-	assert.deepEqual(mergeNote(broken, block, RU), { ok: false, reason: "unbalanced" }, "a half slot is refused");
+	const broken = `${NOTE_START}\n> [!info] Дислокация на карте\nбез конца`;
+	assert.deepEqual(mergeNote(broken, block), { ok: false, reason: "unbalanced" }, "a half slot is refused");
 	const inverted = `${NOTE_END}\n${NOTE_START}`;
-	assert.deepEqual(mergeNote(inverted, block, RU), { ok: false, reason: "unbalanced" }, "inverted markers are refused");
+	assert.deepEqual(mergeNote(inverted, block), { ok: false, reason: "unbalanced" }, "inverted markers are refused");
+
+	// 5b. The same, with a hand-edited callout already in the file. A lone marker
+	// is exactly the state a writer leaves behind by deleting the block in Live
+	// Preview, and it is the one case where guessing would eat the file.
+	assert.deepEqual(
+		mergeNote(`# Заголовок\n\n${NOTE_END}\n\nмой текст`, block),
+		{ ok: false, reason: "unbalanced" },
+		"a lone closing marker in an author's file is refused too",
+	);
+
+	// 6. A marker that something else respaced is still ours.
+	const respaced = [`# Заголовок`, ``, `<!--wsm:summary:start-->`, `старое`, `<!-- wsm:summary:end -->`, `мой текст`].join(
+		"\n",
+	);
+	const respacedMerge = mergeNote(respaced, block);
+	assert.equal(respacedMerge.ok, true, "a respaced marker pair is recognised");
+	assert.equal(
+		respacedMerge.ok && (respacedMerge.text.match(/wsm:summary:start/g) ?? []).length,
+		1,
+		"and rewritten in place rather than prepended, so a formatter cannot cause a second block",
+	);
+}
+
+{
+	// The export: the block stops being scaffolding and becomes the file. A
+	// reader in another app has no callout parser, and `> [!info]` renders as
+	// nothing at all there, so a straight copy of the note would export a list of
+	// quote marks and no information.
+	const block = buildNoteBlock(
+		{ map_bg: null, nodes: [{ id: "n1", label: "Лес", x: 0, y: 0, chars: ["yan"] }] },
+		[yana, mother],
+		RU,
+	);
+	const source = `${block}\n\nСвободная зона автора.\n\n*Курсив автора.*`;
+	const exported = exportTextFor(source, RU);
+
+	assert.equal(
+		exported,
+		[
+			"### 🗺️ Дислокация на карте",
+			"* **Лес:** Ян",
+			"",
+			"⚠️ Вне сюжета (остались в пуле):",
+			"* Приемная Мать Кая",
+			"",
+			"Свободная зона автора.",
+			"",
+			"*Курсив автора.*",
+		].join("\n"),
+		"the callout becomes a heading and a list, and the author's text is carried over whole",
+	);
+	assert.equal(exported.includes(">"), false, "no callout quotes survive");
+	assert.equal(exported.includes("[!info]"), false, "and no callout header");
+	assert.equal(exported.includes("<!--"), false, "and no plugin markers: nothing in this file is ours any more");
+	assert.equal(exported.includes(RU.freeZone), false, "the free-zone reminder is dropped: there is no block left to remind about");
+	// The author's own italics are the trap here: the reminder is stripped by
+	// position, so an italic line the writer wrote survives untouched.
+	assert.equal(exported.includes("*Курсив автора.*"), true, "the author's own italic line is not mistaken for the reminder");
+
+	// Nested structure survives the unquoting, at the same indent.
+	const nestedBlock = buildNoteBlock(
+		{
+			map_bg: null,
+			nodes: [
+				{
+					id: "harbour",
+					label: "Гавань",
+					kind: "zone",
+					zone: [
+						{ x: 0, y: 0 },
+						{ x: 10, y: 0 },
+						{ x: 10, y: 10 },
+					],
+					x: 0,
+					y: 0,
+					chars: [],
+				},
+				{ id: "pier", label: "Причал", x: 1, y: 1, chars: ["yan"], parentId: "harbour" },
+			],
+		},
+		[yana],
+		RU,
+	);
+	assert.equal(
+		exportTextFor(nestedBlock, RU),
+		["### 🗺️ Дислокация на карте", "* **Гавань:** Ян", "  * **Причал:** Ян"].join("\n"),
+		"nesting and the two bullet marks both come through",
+	);
+
+	// A file with no block in it is not ours to tidy.
+	assert.equal(exportTextFor("# Мой текст\n\n> цитата", RU), "# Мой текст\n\n> цитата", "a note with no block is left alone");
+
+	// The author's text above the block has to survive the unquoting too, and it
+	// comes out where it was — the export removes the block, it does not rebuild
+	// the file around it.
+	assert.equal(
+		exportTextFor(`# Заголовок\n\n${block}\n\nмоя зона`, RU).startsWith("### 🗺️ Дислокация на карте"),
+		true,
+		"the exported block goes to the top, where the note kept it",
+	);
+	assert.equal(exportTextFor(`# Заголовок\n\n${block}\n\nмоя зона`, RU).includes("моя зона"), true, "and the zone is still there");
 }
 
 {
@@ -3716,49 +3980,50 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	);
 
 	assert.equal(await writer.write(chapter), true, "the note is created on the first write");
-	assert.deepEqual(app.adapterWrites, [target], "the write lands on the mirrored note, never on the chapter");
-	assert.equal(app.adapterFiles[chapter], undefined, "the chapter note is not created or touched");
-	assert.equal(app.adapterFiles[target].includes("[[Ян]]"), true, "the note lists the character as a wikilink");
+	assert.deepEqual(app.vaultCreated, [target], "the note is created through the vault API, not the adapter");
+	assert.deepEqual(app.adapterWrites, [], "and the adapter is not touched at all: it is for data.json only");
+	assert.equal(app.vaultFiles[chapter], undefined, "the chapter note is not created or touched");
+	assert.equal(app.vaultFiles[target].includes("> - **Деревня Яна:** Ян"), true, "the note lists the character");
 	assert.deepEqual(
-		Object.keys(app.adapterFolders),
-		[".Writer Maps Data", ".Writer Maps Data/Кровь и Искра"],
-		"the mirrored folders are created segment by segment, because the adapter has no recursive mkdir",
+		Object.keys(app.vaultFolders),
+		["Writer Maps Notes", "Writer Maps Notes/Кровь и Искра"],
+		"the mirrored folders are created segment by segment, because the vault has no recursive mkdir",
 	);
 
 	// Second write with the same data: nothing to do.
 	assert.equal(await writer.write(chapter), false, "unchanged data is not rewritten");
-	assert.equal(app.adapterWrites.length, 1, "and costs no second write");
+	assert.equal(app.vaultCreated.length + app.vaultModified.length, 1, "and costs no second write");
 
 	// Unticking a character rewrites the block, and the author's zone survives.
-	app.adapterFiles[target] = `${app.adapterFiles[target]}\n\nМоя свободная зона.`;
+	app.vaultFiles[target] = `${app.vaultFiles[target]}\n\nМоя свободная зона.`;
 	const map = plugin.settings.maps[chapter];
 	map.nodes[0].chars = [];
 	assert.equal(await writer.write(chapter), true, "a character change rewrites the note");
-	assert.equal(app.adapterFiles[target].includes("Моя свободная зона."), true, "the author's own text is preserved");
+	assert.equal(app.vaultFiles[target].includes("Моя свободная зона."), true, "the author's own text is preserved");
 	assert.equal(
-		app.adapterFiles[target].includes("- **Деревня Яна**: *Локация пуста*"),
+		app.vaultFiles[target].includes("> - **Деревня Яна:** *Локация пуста*"),
 		true,
 		"the emptied location says so",
 	);
 	assert.equal(
-		app.adapterFiles[target].includes(RU.offStoryTitle) && app.adapterFiles[target].includes("- [[Ян]]"),
+		app.vaultFiles[target].includes(RU.offStoryTitle) && app.vaultFiles[target].includes("> - Ян"),
 		true,
 		"a removed character moves to the off-story pool, it is not lost",
 	);
 	assert.equal(
-		app.adapterFiles[target].indexOf("- [[Ян]]") > app.adapterFiles[target].indexOf(RU.offStoryTitle),
+		app.vaultFiles[target].indexOf("> - Ян") > app.vaultFiles[target].indexOf(RU.offStoryTitle),
 		true,
 		"the pool is listed under its own heading",
 	);
 
 	// Dragging a node, and dragging a character around its pin: the signature is
 	// unchanged, so neither costs a disk write.
-	const before = app.adapterWrites.length;
+	const before = app.vaultModified.length;
 	map.nodes[0].x = 999;
 	assert.equal(await writer.write(chapter), false, "a node drag writes nothing");
 	map.nodes[0].charOffsets = { yan: { offsetX: 40, offsetY: 12 } };
 	assert.equal(await writer.write(chapter), false, "dragging a character around the pin writes nothing");
-	assert.equal(app.adapterWrites.length, before, "neither drag costs a write");
+	assert.equal(app.vaultModified.length, before, "neither drag costs a write");
 
 	// The signature cache can be dropped, since a reload or an import may have
 	// changed the file behind our back.
@@ -3771,15 +4036,20 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	const chapter = "Глава.md";
 	const target = notePathFor(chapter);
 	const app = new App();
-	app.adapterFiles[target] = `${NOTE_START}\nбез конца`;
+	app.vaultFiles[target] = `${NOTE_START}\n> [!info] Дислокация на карте\nбез конца`;
 
 	const plugin = makePlugin(chapter, [yana]);
 	plugin.settings.maps[chapter] = { map_bg: null, nodes: [{ id: "n1", label: "Яна", x: 0, y: 0, chars: ["yan"] }] };
 	const writer = new NoteWriter(withApp(plugin, app) as never);
 
 	assert.equal(await writer.write(chapter), false, "an unbalanced file is not written");
-	assert.deepEqual(app.adapterWrites, [], "not a single byte was written");
-	assert.equal(app.adapterFiles[target], `${NOTE_START}\nбез конца`, "and the broken file is exactly as it was");
+	assert.deepEqual(app.vaultModified, [], "not a single byte was written");
+	assert.deepEqual(app.vaultCreated, [], "and nothing was created over it either");
+	assert.equal(
+		app.vaultFiles[target],
+		`${NOTE_START}\n> [!info] Дислокация на карте\nбез конца`,
+		"and the broken file is exactly as it was",
+	);
 }
 
 {
@@ -3798,7 +4068,25 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		"a note is never given a note of its own, or the folders would nest forever",
 	);
 	assert.equal(await writer.diskText("Глава.md"), null, "reading is gated too, not just writing");
-	assert.deepEqual(app.adapterWrites, [], "nothing outside the managed roots is ever written");
+	assert.deepEqual(app.vaultCreated, [], "nothing outside the managed roots is ever created");
+	assert.deepEqual(app.vaultModified, [], "nor modified");
+}
+
+{
+	// A folder where the note file should be. `getAbstractFileByPath` answers for
+	// both kinds of entry, so the only honest check is `instanceof TFile` — a
+	// folder handed to `modify` throws halfway through a write, with the file left
+	// half-updated and an error the author never caused.
+	const chapter = "Глава.md";
+	const app = new App();
+	app.vaultFolders[notePathFor(chapter)] = true;
+	const plugin = makePlugin(chapter, [yana]);
+	plugin.settings.maps[chapter] = { map_bg: null, nodes: [{ id: "n1", label: "Яна", x: 0, y: 0, chars: ["yan"] }] };
+	const writer = new NoteWriter(withApp(plugin, app) as never);
+
+	assert.equal(await writer.write(chapter), false, "a folder sitting where the note belongs is not written into");
+	assert.deepEqual(app.vaultModified, [], "and `modify` is never handed the folder");
+	assert.equal(app.vaultFiles[chapter], undefined, "the chapter is still untouched");
 }
 
 {
@@ -3811,13 +4099,43 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	const writer = new NoteWriter(withApp(plugin, app) as never);
 
 	assert.equal(await writer.ensure(chapter), true, "a chapter without a map still gets a note");
-	assert.equal(app.adapterFiles[target].startsWith(NOTE_START), true, "the note opens with the generated block");
+	assert.equal(app.vaultFiles[target].startsWith(NOTE_START), true, "the note opens with the generated block");
 	assert.equal(
-		app.adapterFiles[target].includes(t("en", "noteNoLocations")),
+		app.vaultFiles[target].includes(t("en", "noteNoLocations")),
 		true,
 		"and admits there is no map yet",
 	);
 	assert.equal(await writer.ensure(chapter), false, "opening the tab twice does not rewrite it");
+}
+
+{
+	// A note the author wrote themselves, with no markers in it at all. The
+	// plugin is allowed to own a block, not to own the file, so the block goes on
+	// top and their text stays exactly where it was.
+	const chapter = "Глава.md";
+	const target = notePathFor(chapter);
+	const app = new App();
+	app.vaultFiles[target] = "# Моя глава\n\nТекст, который нельзя двигать.";
+	const plugin = makePlugin(chapter, [yana]);
+	// The Notice is the point of this test, so the language is pinned rather than
+	// left to the fake plugin's default.
+	plugin.settings.language = "ru";
+	plugin.settings.maps[chapter] = { map_bg: null, nodes: [{ id: "n1", label: "Яна", x: 0, y: 0, chars: ["yan"] }] };
+	const writer = new NoteWriter(withApp(plugin, app) as never);
+
+	noticeLog.length = 0;
+	assert.equal(await writer.write(chapter), true, "a foreign note is accepted");
+	assert.equal(app.vaultFiles[target].startsWith(NOTE_START), true, "the block goes in at the top");
+	assert.equal(
+		app.vaultFiles[target].endsWith("Текст, который нельзя двигать."),
+		true,
+		"and the author's text is still the last thing in the file",
+	);
+	assert.equal(
+		noticeLog.some((message) => message.includes(t("ru", "noticeNotePrepended").split("{")[0].trim())),
+		true,
+		"and the author is told, because a callout above their title is not something they asked for",
+	);
 }
 
 {
@@ -3832,15 +4150,17 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	const writer = new NoteWriter(withApp(plugin, app) as never);
 
 	await writer.write(chapter);
-	const written = app.adapterFiles[target];
-	app.adapterWrites.length = 0;
+	const written = app.vaultFiles[target];
+	app.vaultCreated.length = 0;
+	app.vaultModified.length = 0;
 
 	// The author types and has not saved: the buffer no longer matches the disk.
 	app.openEditorBuffers[target] = `${written}\n\nчерновик, который не сохранён`;
 	plugin.settings.maps[chapter].nodes[0].chars = [];
 
 	assert.equal(await writer.write(chapter), false, "a dirty editor defers the write");
-	assert.deepEqual(app.adapterWrites, [], "nothing is written over an unsaved buffer");
+	assert.deepEqual(app.vaultModified, [], "nothing is written over an unsaved buffer");
+	assert.deepEqual(app.vaultCreated, [], "and nothing is created to work around it");
 	assert.deepEqual(writer.deferredChapters(), [chapter], "the chapter is remembered as waiting for a save");
 
 	// Saving writes the buffer out and then fires vault.on("modify"), which is
@@ -3850,9 +4170,12 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	await settle();
 	await settle();
 
-	assert.deepEqual(app.adapterWrites, [target], "the deferred write lands once the buffer is saved");
+	// saveEditor records the save itself, so the deferred write is the second
+	// entry: the buffer going to disk, and the block being regenerated on top of
+	// it.
+	assert.deepEqual(app.vaultModified, [target, target], "the deferred write lands once the buffer is saved");
 	assert.equal(
-		app.adapterFiles[target].includes("черновик, который не сохранён"),
+		app.vaultFiles[target].includes("черновик, который не сохранён"),
 		true,
 		"the author's unsaved line is still there: the merge only owns its own block",
 	);
@@ -3872,30 +4195,28 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	plugin.settings.maps[chapter] = { map_bg: null, nodes: [{ id: "n1", label: "Яна", x: 0, y: 0, chars: ["yan"] }] };
 	const writer = new NoteWriter(withApp(plugin, app) as never);
 	assert.equal(await writer.write(chapter), true, "the first write goes through");
-	assert.deepEqual(app.adapterWrites, [target], "exactly one write so far");
+	assert.deepEqual(app.vaultCreated, [target], "exactly one write so far");
+	assert.deepEqual(app.vaultModified, [], "and it was a create, not a modify");
 
 	// Our own write coming back as an event must not produce a second write.
 	for (const listener of app.vaultListeners) listener({ path: target } as never);
 	await settle();
 	await settle();
-	assert.equal(app.adapterWrites.length, 1, "the echo of our own write is not mistaken for a save");
+	assert.equal(app.vaultCreated.length + app.vaultModified.length, 1, "the echo of our own write is not mistaken for a save");
 
 	// And a real save of the author's text does release a deferred write.
-	app.openEditorBuffers[target] = `${app.adapterFiles[target]}\n\nправка автора`;
+	app.openEditorBuffers[target] = `${app.vaultFiles[target]}\n\nправка автора`;
 	plugin.settings.maps[chapter].nodes[0].chars = ["yan", "kai"];
 	assert.equal(await writer.write(chapter), false, "a second change is deferred while the buffer is dirty");
-	app.adapterWrites.length = 0;
+	app.vaultCreated.length = 0;
+	app.vaultModified.length = 0;
 
 	app.saveEditor(target);
 	await settle();
 	await settle();
 	await settle();
-	assert.deepEqual(app.adapterWrites, [target], "a genuine save releases the deferred write exactly once");
-	assert.equal(
-		app.adapterFiles[target].includes("правка автора"),
-		true,
-		"and the author's line survives it",
-	);
+	assert.deepEqual(app.vaultModified, [target, target], "a genuine save releases the deferred write exactly once");
+	assert.equal(app.vaultFiles[target].includes("правка автора"), true, "and the author's line survives it");
 	assert.deepEqual(writer.deferredChapters(), [], "nothing is left waiting");
 }
 
@@ -3921,9 +4242,9 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 
 	const writer = new NoteWriter(withApp(plugin, app) as never);
 	assert.equal(await writer.write(chapter), true, "an untouched empty buffer does not defer the first write");
-	assert.equal(app.adapterWrites.length, 1, "and the file is written");
+	assert.equal(app.vaultCreated.length, 1, "and the file is created");
 	assert.equal(
-		app.adapterFiles[target].includes("[[Ян]]"),
+		app.vaultFiles[target].includes("> - **Яна:** Ян"),
 		true,
 		"so the digest is on disk rather than waiting for a save that will never come",
 	);
@@ -3934,16 +4255,12 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 	// on disk is no longer that text - a sync, a revert, another machine. The
 	// buffer differs from disk, so "does it differ" says defer, and it would wait
 	// for a save that has nothing to save. Ours is not the author's to protect.
-	const ours = app.adapterFiles[target];
+	const ours = app.vaultFiles[target];
 	app.openEditorBuffers[target] = ours;
 	// The file moves underneath: a revert, a sync, another machine. Now the buffer
 	// and the disk genuinely differ, and neither is empty.
-	app.adapterFiles[target] = ours.replace(/- \*\*Яна\*\*/, "- **Старое имя**");
-	assert.notEqual(
-		app.adapterFiles[target],
-		app.openEditorBuffers[target],
-		"the pretense is real: disk and buffer hold different text",
-	);
+	app.vaultFiles[target] = ours.replace(/- \*\*Яна:\*\*/, "- **Старое имя:**");
+	assert.notEqual(app.vaultFiles[target], app.openEditorBuffers[target], "the pretense is real: disk and buffer hold different text");
 
 	plugin.settings.maps[chapter].nodes[0].label = "Порт Яна";
 	assert.equal(
@@ -3951,25 +4268,17 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 		true,
 		"a buffer holding our own text does not defer, even when the file moved under it",
 	);
-	assert.equal(
-		app.adapterFiles[target].includes("Порт Яна"),
-		true,
-		"the rename reached the disk behind the stale pane",
-	);
+	assert.equal(app.vaultFiles[target].includes("Порт Яна"), true, "the rename reached the disk behind the stale pane");
 	assert.deepEqual(writer.deferredChapters(), [], "with nothing left waiting");
 
 	// The one case that must still wait: the author is typing. Their text is not
 	// on disk and is not anything we wrote, so it is theirs and the write waits.
-	const mine = app.adapterFiles[target];
+	const mine = app.vaultFiles[target];
 	app.openEditorBuffers[target] = `${mine}\n\nсвоими словами`;
 	plugin.settings.maps[chapter].nodes[0].label = "Город Яна";
 	assert.equal(await writer.write(chapter, true), false, "a real unsaved edit is still deferred");
 	assert.deepEqual(writer.deferredChapters(), [chapter], "and the chapter is remembered as waiting");
-	assert.equal(
-		app.adapterFiles[target].includes("Город Яна"),
-		false,
-		"with nothing written over the author's words",
-	);
+	assert.equal(app.vaultFiles[target].includes("Город Яна"), false, "with nothing written over the author's words");
 }
 
 {
@@ -3990,48 +4299,76 @@ const mother = { id: "pmk", name: "Приемная Мать Кая", initials: 
 }
 
 {
-	// Export: everything under the hidden folder, mirrored into the visible one.
+	// Export: every note, mirrored into the export folder — and rewritten on the
+	// way, because a callout is ours and the copy is the writer's.
 	const app = new App();
 	const plugin = makePlugin(null, [yana]);
-	plugin.settings.maps["Книга/Глава 1.md"] = { map_bg: null, nodes: [] };
+	plugin.settings.language = "ru";
+	plugin.settings.maps["Книга/Глава 1.md"] = {
+		map_bg: null,
+		nodes: [{ id: "n1", label: "Лес", x: 0, y: 0, chars: ["yan"] }],
+	};
 	plugin.settings.maps["Книга/Часть 2/Глава 2.md"] = { map_bg: null, nodes: [] };
 	const writer = new NoteWriter(withApp(plugin, app) as never);
 
 	await writer.write("Книга/Глава 1.md");
 	await writer.write("Книга/Часть 2/Глава 2.md");
-	app.adapterWrites.length = 0;
+	// The author's own text, below the block, as it would be in a real vault.
+	app.vaultFiles["Writer Maps Notes/Книга/Глава 1.md"] += "\n\nМоя глава. Черновик.";
+	app.vaultCreated.length = 0;
+	app.vaultModified.length = 0;
 
 	const preview = await writer.previewExport();
 	assert.deepEqual(
 		[...preview.files].sort(),
-		[".Writer Maps Data/Книга/Глава 1.md", ".Writer Maps Data/Книга/Часть 2/Глава 2.md"],
+		["Writer Maps Notes/Книга/Глава 1.md", "Writer Maps Notes/Книга/Часть 2/Глава 2.md"],
 		"the preview sees every note, nested folders included",
 	);
 	assert.equal(preview.hasContent, false, "an empty export folder needs no confirmation");
 
 	assert.equal(await writer.exportAll(), 2, "both notes are copied out");
+	const copied = app.vaultFiles["Writer Maps Export/Книга/Глава 1.md"];
 	assert.equal(
-		app.adapterFiles["Writer Maps Export/Книга/Глава 1.md"],
-		app.adapterFiles[".Writer Maps Data/Книга/Глава 1.md"],
-		"the exported note is a byte-for-byte copy",
+		copied.startsWith("### 🗺️ Дислокация на карте"),
+		true,
+		"the callout leaves as a heading, because the copy is read outside Obsidian",
 	);
+	assert.equal(copied.includes("* **Лес:** Ян"), true, "and the list comes out as plain markdown");
+	assert.equal(copied.includes(">"), false, "no callout quoting survives into the copy");
+	assert.equal(copied.includes("<!--"), false, "and no plugin markers: nothing in the copy is ours to update");
+	assert.equal(copied.includes("Моя глава. Черновик."), true, "the author's own text is carried over whole");
 	assert.equal(
-		app.adapterFiles["Writer Maps Export/Книга/Часть 2/Глава 2.md"] !== undefined,
+		app.vaultFiles["Writer Maps Export/Книга/Часть 2/Глава 2.md"] !== undefined,
 		true,
 		"the nested folder structure is mirrored, not flattened",
 	);
 	assert.ok(
-		"Writer Maps Export/Книга/Часть 2" in app.adapterFolders,
+		"Writer Maps Export/Книга/Часть 2" in app.vaultFolders,
 		"and the missing export folders are created on the way",
 	);
 	assert.equal(
-		app.adapterWrites.every((path) => path.startsWith(`${EXPORT_ROOT}/`)),
+		[...app.vaultCreated, ...app.vaultModified].every((path) => path.startsWith(`${EXPORT_ROOT}/`)),
 		true,
 		"an export only ever writes inside the export folder",
+	);
+	assert.equal(
+		app.vaultFiles["Writer Maps Notes/Книга/Глава 1.md"].includes("<!--"),
+		true,
+		"and the working note is left as a callout, because that is where the plugin can still update it",
 	);
 
 	const second = await writer.previewExport();
 	assert.equal(second.hasContent, true, "a second export asks before overwriting");
+
+	// A second export overwrites rather than duplicating. The transform is applied
+	// to the *note*, never to the copy, so the copy has no markers to be confused
+	// about and a re-export cannot stack a second heading on the first.
+	assert.equal(await writer.exportAll(), 2, "a re-export runs again");
+	assert.equal(
+		app.vaultFiles["Writer Maps Export/Книга/Глава 1.md"],
+		copied,
+		"and produces the same text, with no second heading stacked on top",
+	);
 }
 
 /* ======================================================================== *
